@@ -14,7 +14,7 @@ class Config:
     APIFY_API_TOKEN: str = os.getenv("APIFY_API_TOKEN", "")
 
     # Apify Actor ID: Instagram Hashtag Scraper
-    APIFY_ACTOR_ID: str = "apify/instagram-scraper"
+    APIFY_ACTOR_ID: str = "apify~instagram-scraper"
 
     # 수집 대상 해시태그
     HASHTAGS_KR: list[str] = [
