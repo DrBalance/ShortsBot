@@ -1,0 +1,24 @@
+# Core
+anthropic>=0.40.0
+python-dotenv>=1.0.0
+
+# Supabase
+supabase>=2.0.0
+
+# Google Gemini (나노바나나2)
+google-generativeai>=0.8.0
+
+# ElevenLabs TTS
+httpx>=0.27.0
+
+# Kling API JWT
+PyJWT>=2.8.0
+
+# Cloudflare R2 (S3 호환)
+boto3>=1.35.0
+
+# 스케줄러 (3단계에서 사용)
+APScheduler>=3.10.0
+
+# 유틸
+Pillow>=10.0.0
