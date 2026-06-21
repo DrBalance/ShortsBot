@@ -1,0 +1,50 @@
+# ─── 환경변수 (절대 올리면 안 됨) ──────────────────────────
+.env
+.env.local
+.env.production
+
+# ─── macOS ───────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+**/.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# ─── Python ──────────────────────────────────────────────
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# 가상환경
+venv/
+.venv/
+env/
+ENV/
+
+# 빌드 결과물
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ─── 로그 & 임시파일 ─────────────────────────────────────
+logs/
+*.log
+tmp/
+temp/
+
+# 영상 임시 파일
+*.mp4
+*.mp3
+*.wav
+*.srt
+
+# ─── IDE ─────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
