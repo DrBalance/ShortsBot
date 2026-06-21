@@ -84,40 +84,50 @@ class ApifyScraper:
     # ─── 파싱 & 필터링 ────────────────────────────────────────
 
     def _parse_post(self, raw: dict, hashtag: str) -> Optional[dict]:
+
         """
         Apify 결과를 DB 스키마에 맞게 변환합니다.
         좋아요 기준 미달 시 None 반환.
         """
-        likes = raw.get("likesCount") or raw.get("likes") or 0
-        if likes < config.MIN_LIKES:
-            return None
+    if not isinstance(raw, dict):
+        return None
 
-        # 날짜 파싱 (Apify 포맷: "2024-01-15T12:00:00.000Z")
-        posted_at = None
-        ts = raw.get("timestamp") or raw.get("takenAtTimestamp")
-        if ts:
-            try:
-                posted_at = datetime.fromisoformat(str(ts).replace("Z", "+00:00")).isoformat()
-            except ValueError:
-                pass
+    likes = raw.get("likesCount") or 0
+    if likes < config.MIN_LIKES:
+        return None
 
-        # 이미지 URL 수집
-        image_urls = []
-        if raw.get("displayUrl"):
-            image_urls.append(raw["displayUrl"])
-        for node in raw.get("images") or []:
-            if node.get("src"):
-                image_urls.append(node["src"])
+    # 날짜 파싱
+    posted_at = None
+    ts = raw.get("timestamp")
+    if ts:
+        try:
+            posted_at = datetime.fromisoformat(str(ts).replace("Z", "+00:00")).isoformat()
+        except ValueError:
+            pass
 
-        return {
-            "instagram_id": raw.get("id") or raw.get("shortCode", ""),
-            "hashtag": hashtag,
-            "caption": (raw.get("caption") or "")[:2000],  # 최대 2000자
-            "likes_count": likes,
-            "comments_count": raw.get("commentsCount") or 0,
-            "image_urls": image_urls[:5],  # 최대 5장
-            "posted_at": posted_at,
-        }
+    # 이미지 URL
+    image_urls = []
+    if raw.get("displayUrl"):
+        image_urls.append(raw["displayUrl"])
+    if raw.get("videoUrl"):
+        image_urls.append(raw["videoUrl"])
+    for img in raw.get("images") or []:
+        if isinstance(img, str):
+            image_urls.append(img)
+        elif isinstance(img, dict) and img.get("src"):
+            image_urls.append(img["src"])
+
+    return {
+        "instagram_id": raw.get("id") or raw.get("shortCode", ""),
+        "hashtag": hashtag,
+        "caption": (raw.get("caption") or "")[:2000],
+        "likes_count": likes,
+        "comments_count": raw.get("commentsCount") or 0,
+        "image_urls": image_urls[:5],
+        "posted_at": posted_at,
+    }
+    
+    
 
     # ─── 메인 수집 함수 ───────────────────────────────────────
 
