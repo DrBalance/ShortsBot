@@ -28,12 +28,18 @@ class ApifyScraper:
         """
         Apify Actor를 실행하고 run_id를 반환합니다.
         """
+
+        hashtag_urls = [
+            f"https://www.instagram.com/explore/tags/{tag.replace('#', '')}/"
+            for tag in hashtags
+        ]
         payload = {
-            "hashtags": hashtags,
+            "directUrls": hashtag_urls,
+            "resultsType": "posts",
             "resultsLimit": config.MAX_POSTS_PER_HASHTAG,
-            "scrapeType": "posts",
             "proxy": {"useApifyProxy": True},
         }
+        
         url = f"{APIFY_BASE_URL}/acts/{self.actor_id}/runs?token={self.token}"
 
         resp = httpx.post(url, json=payload, headers=self.headers, timeout=30)
