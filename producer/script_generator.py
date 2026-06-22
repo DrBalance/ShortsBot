@@ -7,9 +7,13 @@ script_generator.py
 - 다국어 자막용 번역 생성
 """
 
+import os
 import json
 import anthropic
 from typing import Optional
+from dotenv import load_dotenv
+
+load_dotenv()
 
 client = anthropic.Anthropic()
 

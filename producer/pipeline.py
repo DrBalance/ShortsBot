@@ -15,6 +15,8 @@ pipeline.py
 """
 
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import json
 import traceback
 from datetime import datetime
@@ -33,12 +35,14 @@ from producer.ffmpeg_composer import (
 )
 from producer.r2_uploader import upload_video, upload_subtitles
 
+
+
 WORK_DIR = "/tmp/kbeauty"
 
 
 def get_supabase() -> Client:
     url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
+    key = os.environ.get("SUPABASE_SERVICE_KEY")
     if not url or not key:
         raise ValueError("SUPABASE_URL, SUPABASE_KEY 환경변수 필요")
     return create_client(url, key)

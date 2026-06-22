@@ -2,49 +2,36 @@
 kling_client.py
 
 Kling API로 이미지 → 모션 영상 생성.
+새로운 API Key 방식 (Bearer 토큰) 사용.
 
 왼손AI 선택 기준:
-- Kling 3.0: 화질 우수, 텍스트 안 깨짐, 자연스러운 연기 톤
+- Kling 3.0: 화질 우수, 자연스러운 연기 톤 → K뷰티 쇼츠에 적합
 - SeeDance 2.0: 액션씬, 멀티컷 전환에 강함
-→ K뷰티 쇼츠는 자연스러운 연기 필요 → Kling 3.0 선택
-
-Kling Elements 방식:
-- 캐릭터 이미지(단색 배경) + 로케이션 이미지를 함께 전달
-- 인물 일관성 + 배경 일관성 동시 유지
 """
 
 import os
 import time
 import httpx
 import base64
-import jwt
 from pathlib import Path
 from typing import Optional
-from datetime import datetime, timezone
+from dotenv import load_dotenv
+
+load_dotenv()
 
 KLING_API_URL = "https://api.klingai.com"
 
 
-def _generate_kling_token() -> str:
-    """
-    Kling API JWT 토큰 생성.
-    Access Key + Secret Key로 서명.
-    """
-    access_key = os.environ.get("KLING_ACCESS_KEY")
-    secret_key = os.environ.get("KLING_SECRET_KEY")
+def _get_headers() -> dict:
+    """Kling API 요청 헤더 반환"""
+    api_key = os.environ.get("KLING_API_KEY")
+    if not api_key:
+        raise ValueError("KLING_API_KEY 환경변수가 없습니다")
 
-    if not access_key or not secret_key:
-        raise ValueError("KLING_ACCESS_KEY, KLING_SECRET_KEY 환경변수 필요")
-
-    now = int(datetime.now(timezone.utc).timestamp())
-    payload = {
-        "iss": access_key,
-        "exp": now + 1800,  # 30분
-        "nbf": now - 5,
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
     }
-
-    token = jwt.encode(payload, secret_key, algorithm="HS256")
-    return token
 
 
 def _image_to_base64(image_path: str) -> str:
@@ -65,52 +52,60 @@ def create_image_to_video(
     """
     이미지 → 모션 영상 생성 (Kling Image to Video).
 
-    왼손AI 방식:
-    - 캐릭터 이미지(단색 배경)를 첫 번째 입력으로
-    - 로케이션 이미지를 참조로 추가 (Elements 방식)
-    - 프롬프트에 카메라 무브먼트 포함
-
     Args:
         character_image_path: 캐릭터 이미지 경로 (단색 배경)
         action_prompt: 모션 설명 프롬프트 (영어)
         output_path: 저장할 .mp4 파일 경로
         location_image_path: 배경 이미지 경로 (선택)
+            - 지정 시 image_tail로 전달 → 캐릭터~배경 사이를 자연스럽게 보간
+            - image_tail은 pro 모드에서만 지원됨 → 자동으로 mode=pro 전환
         duration: 영상 길이 초 (5 또는 10)
         aspect_ratio: 화면 비율 (쇼츠는 9:16)
         model: Kling 모델 버전
 
     Returns:
         저장된 영상 파일 경로
+
+    Note:
+        image_tail 지원 여부 (Kling 공식 기준):
+            kling-v1-5 std  → ❌  kling-v1-5 pro  → ✅
+            kling-v1-6 std  → ❌  kling-v1-6 pro  → ✅
+            kling-v2-master → ✅ (모드 구분 없음)
+        location_image_path 없이 캐릭터 이미지만 사용하는 경우 std로 충분.
     """
-    token = _generate_kling_token()
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-
-    # 캐릭터 이미지 base64 변환
     char_b64 = _image_to_base64(character_image_path)
+    use_image_tail = bool(
+        location_image_path and Path(location_image_path).exists()
+    )
 
-    # 요청 페이로드
+    # image_tail은 pro 모드에서만 동작 → 자동 전환
+    # kling-v2-master는 모드 파라미터 없이도 image_tail 지원
+    if use_image_tail and model != "kling-v2-master":
+        mode = "pro"
+        print(f"  [Kling] image_tail 사용 → mode 자동 전환: std → pro")
+    else:
+        mode = "std"
+
     payload = {
-        "model": model,
+        "model_name": model,
+        "mode": mode,
         "image": char_b64,
         "prompt": action_prompt,
         "duration": str(duration),
         "aspect_ratio": aspect_ratio,
-        "cfg_scale": 0.5,  # 프롬프트 준수도 (0~1)
+        "cfg_scale": 0.5,
     }
 
-    # 로케이션 이미지가 있으면 참조 이미지로 추가
-    if location_image_path and Path(location_image_path).exists():
+    # 로케이션 이미지를 끝 프레임으로 추가 (캐릭터→배경 보간)
+    if use_image_tail:
         loc_b64 = _image_to_base64(location_image_path)
-        payload["image_tail"] = loc_b64  # 끝 프레임 참조
+        payload["image_tail"] = loc_b64
+        print(f"  [Kling] image(캐릭터) + image_tail(배경) 보간 모드")
 
-    # 영상 생성 요청
     with httpx.Client(timeout=30.0) as client:
         response = client.post(
             f"{KLING_API_URL}/v1/videos/image2video",
-            headers=headers,
+            headers=_get_headers(),
             json=payload,
         )
 
@@ -127,10 +122,7 @@ def create_image_to_video(
 
     print(f"Kling 영상 생성 시작: task_id={task_id}")
 
-    # 폴링 - 완료까지 대기
-    video_url = _poll_video_task(task_id, token)
-
-    # 영상 다운로드
+    video_url = _poll_video_task(task_id)
     _download_video(video_url, output_path)
 
     print(f"Kling 영상 저장: {output_path}")
@@ -139,17 +131,10 @@ def create_image_to_video(
 
 def _poll_video_task(
     task_id: str,
-    token: str,
     max_wait_sec: int = 300,
     interval_sec: int = 10,
 ) -> str:
-    """
-    Kling 영상 생성 완료까지 폴링.
-
-    Returns:
-        완성된 영상의 다운로드 URL
-    """
-    headers = {"Authorization": f"Bearer {token}"}
+    """Kling 영상 생성 완료까지 폴링"""
     elapsed = 0
 
     while elapsed < max_wait_sec:
@@ -159,7 +144,7 @@ def _poll_video_task(
         with httpx.Client(timeout=30.0) as client:
             response = client.get(
                 f"{KLING_API_URL}/v1/videos/image2video/{task_id}",
-                headers=headers,
+                headers=_get_headers(),
             )
 
         if response.status_code != 200:
@@ -178,7 +163,9 @@ def _poll_video_task(
             raise RuntimeError("영상 URL 없음")
 
         elif status == "failed":
-            raise RuntimeError(f"Kling 영상 생성 실패: {data.get('task_status_msg')}")
+            raise RuntimeError(
+                f"Kling 영상 생성 실패: {data.get('task_status_msg')}"
+            )
 
     raise TimeoutError(f"Kling 타임아웃: {max_wait_sec}초 초과")
 
@@ -202,17 +189,7 @@ def generate_scene_videos(
     candidate_id: str,
     work_dir: str = "/tmp/kbeauty",
 ) -> list:
-    """
-    모든 장면의 모션 영상 생성.
-
-    Args:
-        scenes: image_paths가 포함된 scenes 리스트
-        candidate_id: 파일명 구분용 ID
-        work_dir: 임시 작업 디렉토리
-
-    Returns:
-        scenes에 video_path가 추가된 리스트
-    """
+    """모든 장면의 모션 영상 생성"""
     results = []
 
     for scene in scenes:
@@ -244,3 +221,23 @@ def generate_scene_videos(
             results.append({**scene, "video_path": None})
 
     return results
+
+
+if __name__ == "__main__":
+    # 테스트 - 앞서 생성한 캐릭터 이미지로 모션 영상 생성
+    test_image = "/tmp/test_character.png"
+    output = "/tmp/test_kling_video.mp4"
+
+    print("Kling 영상 생성 테스트 중...")
+    create_image_to_video(
+        character_image_path=test_image,
+        action_prompt=(
+            "A young Korean woman holds up a sheet mask package toward camera, "
+            "smiles brightly and nods with excitement, "
+            "soft natural movement, beauty influencer style"
+        ),
+        output_path=output,
+        duration=5,
+        aspect_ratio="9:16",
+    )
+    print(f"완료: {output}")

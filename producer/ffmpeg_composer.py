@@ -273,19 +273,20 @@ def compose_final_video(
     # 2. 자막 스타일 (쇼츠용 - 화면 중하단, 굵은 폰트)
     subtitle_filter = (
         f"subtitles={srt_path}:force_style='"
-        "FontName=Noto Sans KR,"
-        "FontSize=18,"
+        "FontName=Pretendard,"
+        "FontSize=13,"
         "Bold=1,"
         "PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H00000000,"
-        "Outline=2,"
-        "Shadow=1,"
+        "Outline=1,"
+        "Shadow=0,"
         "Alignment=2,"  # 하단 중앙
-        "MarginV=80"    # 하단 여백
+        "MarginV=60,"    # 하단 여백
+        "Spacing=2"
         "'"
     )
-
-    # 3. 영상 + 음성 + 자막 합성
+    
+       # 3. 영상 + 음성 + 자막 합성
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
@@ -351,8 +352,7 @@ def merge_scene_audios(
         "-f", "concat",
         "-safe", "0",
         "-i", audio_list_path,
-        "-c:a", "aac",
-        "-b:a", "192k",
+        "-c:a", "copy",
         output_path,
     ]
 
@@ -362,3 +362,56 @@ def merge_scene_audios(
 
     print(f"나레이션 합병 완료: {output_path}")
     return output_path
+
+if __name__ == "__main__":
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    # 앞서 생성한 파일들 사용
+    test_image = "/tmp/test_character.png"
+    test_audio = "/tmp/test_narration.mp3"
+    work_dir = "/tmp/kbeauty"
+    candidate_id = "test_001"
+
+    # 테스트용 scenes 구성
+    scenes = [
+        {
+            "order": 1,
+            "duration_sec": 6,
+            "narration": "마스크팩 매일 쓰면 진짜 피부 달라질까요? 저 직접 7일 동안 해봤어요!",
+            "actual_duration_sec": 5.9,
+            "character_image_path": test_image,
+            "location_image_path": None,
+            "video_path": None,
+            "audio_path": test_audio,
+        }
+    ]
+
+    print("1. SRT 자막 생성 중...")
+    srt_path = f"{work_dir}/{candidate_id}/subtitle_ko.srt"
+    create_srt_file(scenes=scenes, output_path=srt_path)
+    print(f"   완료: {srt_path}")
+
+    print("2. 나레이션 합병 중...")
+    narration_path = f"{work_dir}/{candidate_id}/narration_full.mp3"
+    merge_scene_audios(
+        scenes=scenes,
+        output_path=narration_path,
+        work_dir=work_dir,
+        candidate_id=candidate_id,
+    )
+
+    print("3. 최종 영상 합성 중...")
+    final_path = f"{work_dir}/{candidate_id}/final.mp4"
+    compose_final_video(
+        scenes=scenes,
+        narration_audio_path=narration_path,
+        srt_path=srt_path,
+        output_path=final_path,
+        work_dir=work_dir,
+        candidate_id=candidate_id,
+    )
+
+    print(f"\n✅ 완료! 영상 확인:")
+    print(f"   open {final_path}")

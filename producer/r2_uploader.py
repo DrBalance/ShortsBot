@@ -9,6 +9,8 @@ import os
 import boto3
 from pathlib import Path
 from botocore.config import Config
+from dotenv import load_dotenv
+load_dotenv()
 
 
 def get_r2_client():
@@ -119,3 +121,11 @@ def upload_subtitles(
         print(f"자막 업로드 ({lang}): {r2_key}")
 
     return uploaded
+
+if __name__ == "__main__":
+    print("R2 업로드 테스트 중...")
+    result = upload_video(
+        local_path="/tmp/test_kling_video.mp4",
+        candidate_id="test_001",
+    )
+    print(f"완료: {result}")

@@ -19,6 +19,8 @@ import os
 import httpx
 from pathlib import Path
 from typing import Optional
+from dotenv import load_dotenv
+load_dotenv()
 
 ELEVENLABS_API_URL = "https://api.elevenlabs.io/v1"
 
@@ -199,13 +201,13 @@ def generate_scene_narrations(
 
     return results
 
-
 if __name__ == "__main__":
-    # 목소리 목록 확인
-    print("사용 가능한 목소리 목록:")
-    try:
-        voices = list_available_voices()
-        for v in voices[:10]:
-            print(f"  {v['voice_id']}: {v['name']} - {v['labels']}")
-    except Exception as e:
-        print(f"오류: {e}")
+    print("나레이션 생성 테스트 중...")
+    path = generate_narration(
+        text="마스크팩 매일 쓰면 진짜 피부 달라질까요? 저 직접 7일 동안 해봤어요!",
+        output_path="/tmp/test_narration.mp3",
+    )
+    print(f"완료: {path}")
+
+    duration = get_audio_duration("/tmp/test_narration.mp3")
+    print(f"음성 길이: {duration:.1f}초")
