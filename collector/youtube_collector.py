@@ -83,7 +83,7 @@ Only include consumer_problems and consumer_expectations that appear in multiple
 def _run_apify_actor(actor_id: str, input_data: dict, timeout_secs: int = 120) -> list[dict]:
     """Apify Actor를 실행하고 결과 데이터셋을 반환합니다."""
     headers = {"Content-Type": "application/json"}
-    params  = {"token": config.APIFY_API_KEY}
+    params  = {"token": config.APIFY_API_TOKEN}
 
     # Actor 실행
     run_url = f"{APIFY_BASE_URL}/acts/{actor_id}/runs"
@@ -297,7 +297,7 @@ def collect_pain_points_for_product(product_keyword: str) -> dict:
           "signal_strength": float
         }
     """
-    if not config.APIFY_API_KEY:
+    if not config.APIFY_API_TOKEN:
         logger.warning("APIFY_API_KEY 미설정 — 소구점 수집 스킵")
         return {"consumer_problems": [], "consumer_expectations": [], "signal_strength": 0.0}
 
@@ -325,7 +325,7 @@ def collect_pain_points_from_seed_channels() -> list[dict]:
     Returns:
         [{"channel": ..., "video_urls": [...], "pain_points": {...}}, ...]
     """
-    if not config.APIFY_API_KEY:
+    if not config.APIFY_API_TOKEN:
         logger.warning("APIFY_API_KEY 미설정 — 시드 채널 수집 스킵")
         return []
 

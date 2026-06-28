@@ -77,7 +77,7 @@ Write consumer_problems and consumer_expectations as complete, natural sentences
 def _run_apify_actor(actor_id: str, input_data: dict, timeout_secs: int = 120) -> list[dict]:
     """Apify Actor를 실행하고 결과 데이터셋을 반환합니다."""
     headers = {"Content-Type": "application/json"}
-    params  = {"token": config.APIFY_API_KEY}
+    params  = {"token": config.APIFY_API_TOKEN}
 
     run_url = f"{APIFY_BASE_URL}/acts/{actor_id}/runs"
     resp = requests.post(run_url, json=input_data, headers=headers, params=params, timeout=30)
@@ -118,7 +118,7 @@ def search_reddit(product_keyword: str, max_posts: int = 20) -> list[dict]:
     Returns:
         [{"subreddit": ..., "title": ..., "body": ..., "comments": [...]}, ...]
     """
-    if not config.APIFY_API_KEY:
+    if not config.APIFY_API_TOKEN:
         logger.warning("APIFY_API_KEY 미설정 — Reddit 수집 스킵")
         return []
 
@@ -226,7 +226,7 @@ def collect_pain_points_for_product(product_keyword: str) -> dict:
           "signal_strength": float
         }
     """
-    if not config.APIFY_API_KEY:
+    if not config.APIFY_API_TOKEN:
         return {"consumer_problems": [], "consumer_expectations": [], "signal_strength": 0.0}
 
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
