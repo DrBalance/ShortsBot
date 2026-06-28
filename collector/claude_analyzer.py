@@ -2,8 +2,13 @@
 collector/claude_analyzer.py
 수집된 인스타 게시물을 Claude로 분석하여 쇼츠 콘텐츠 후보를 생성합니다.
 
+파이프라인:
+  인스타(한/일) → 트렌드 분류 → 제품명 추출
+  → YouTube 댓글 + Reddit → 소구점 수집
+  → 영어 스크립트 생성
+
 콘텐츠 유형 3가지:
-  - 새소식: 정보 격차형 — 한국에서 뜨는데 동남아에 아직 없는 것
+  - 새소식: 정보 격차형 — 한국에서 뜨는 제품을 영어권이 아직 모름
   - 문제추천: Problem Oriented Solution — 소비자 문제에서 출발하는 제품 추천
   - 관심상품: 타인들의 선택 분석 — TOP3/4, 베스트셀러, 스테디셀러
 """
@@ -13,134 +18,148 @@ import logging
 import anthropic
 from config import config
 from db import supabase_client as db
+from youtube_collector import collect_pain_points_for_product as yt_pain_points
+from reddit_collector import (
+    collect_pain_points_for_product as reddit_pain_points,
+    merge_pain_points,
+)
 
 logger = logging.getLogger(__name__)
 
 
 # ─── 1단계: 분류 프롬프트 ────────────────────────────────────────
 
-CLASSIFY_SYSTEM_PROMPT = """당신은 K뷰티 콘텐츠 전략가입니다.
-인스타그램 게시물을 분석하여 유튜브 쇼츠 콘텐츠 유형을 분류합니다.
+CLASSIFY_SYSTEM_PROMPT = """You are a K-beauty content strategist.
+Analyze Korean/Japanese Instagram posts and classify them into YouTube Shorts content types
+targeting English-speaking audiences (US, UK, Australia, Canada).
 
-반드시 JSON 형식으로만 응답하세요. 다른 텍스트는 포함하지 마세요.
+Respond only in JSON format. No other text.
 """
 
-CLASSIFY_USER_TEMPLATE = """다음 인스타그램 게시물들을 분석하여 콘텐츠 유형을 분류해주세요.
+CLASSIFY_USER_TEMPLATE = """Analyze these Instagram posts and classify them for English-speaking K-beauty audiences.
 
-=== 게시물 목록 ===
+=== Posts ===
 {posts_text}
 
-=== 콘텐츠 유형 정의 ===
+=== Content Type Definitions ===
 
-1. 새소식 (정보격차형)
-   - 한국에서 최근 화제가 된 신제품/트렌드
-   - 동남아 소비자가 아직 모를 가능성이 높은 정보
-   - 용도/특징을 몰라서 관심이 없었던 제품을 알려주는 것
-   - 예: 품절대란 선크림, 올리브영 신상, 한국 인스타 난리난 제품
+1. new_find (Information Gap)
+   - Products recently trending in Korea that English-speaking audiences haven't discovered yet
+   - New launches, viral products, sold-out items
+   - Ex: sold-out sunscreen, new Olive Young launch, product going viral on Korean Instagram
 
-2. 문제추천 (Problem Oriented Solution)
-   - 특정 피부 고민/문제 상황이 명확히 존재
-   - 그 문제를 해결하는 제품을 추천하는 구조
-   - 예: 지성피부 선크림 번들거림, 민감성 피부 보습, 여름 모공 관리
+2. problem_solution (Problem Oriented Solution)
+   - A clear skin problem/concern exists
+   - Recommends a specific K-beauty product as the solution
+   - Ex: sunscreen that pills under makeup, oily skin moisturizer, sensitive skin routine
 
-3. 관심상품 (타인들의 선택 분석)
-   - 판매 순위, 베스트셀러, 스테디셀러, 세일 추천
-   - 다른 사람들이 많이 선택한 제품을 보여주는 구조
-   - 제품이 3~4개 묶음으로 소개되는 경우
-   - 예: 올리브영 이달 TOP3, 동남아에서 가장 많이 팔린 K뷰티
+3. top_picks (Social Proof / Rankings)
+   - Sales rankings, bestsellers, steady sellers, sale recommendations
+   - Multiple products (3~4) shown together
+   - Ex: Olive Young top 3 this month, most repurchased K-beauty toners
 
-=== 응답 형식 (JSON 배열) ===
+=== Response Format (JSON array) ===
 [
   {{
     "post_index": 0,
-    "content_type": "새소식 | 문제추천 | 관심상품",
-    "relevance_score": 0.0 ~ 1.0,
-    "trend_topic": "핵심 트렌드 주제",
-    "products": ["제품1", "제품2"],
-    "consumer_problem": "소비자가 겪는 문제 (문제추천 유형만, 나머지는 null)",
-    "consumer_expectation": "소비자 기대감/니즈 (새소식 유형, 인스타 댓글/반응에서 추출)",
-    "keywords": ["키워드1", "키워드2", "키워드3", "키워드4", "키워드5"]
+    "content_type": "new_find | problem_solution | top_picks",
+    "relevance_score": 0.0,
+    "trend_topic": "core trend topic in English",
+    "products": ["Product Name 1", "Product Name 2"],
+    "consumer_problem": "skin problem this solves (problem_solution only, else null)",
+    "consumer_expectation": "what result/benefit they want (new_find only, else null)",
+    "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"]
   }}
 ]
 
-relevance_score 기준:
-- 0.9+: 제품 정보, 가격, 순위, 루틴 등 명확한 정보성
-- 0.7+: 트렌드 소개, 신상 소개
-- 0.6 미만: 단순 일상, 광고 느낌 강함 → 배열에서 제외
+relevance_score criteria:
+- 0.9+: clear product info, rankings, ingredients, routine — strong content potential
+- 0.7+: trend intro, new launch — moderate potential
+- below 0.6: generic lifestyle, strong ad feel → exclude from array
 """
 
 
 # ─── 2단계: 스크립트 생성 프롬프트 ──────────────────────────────
 
-SCRIPT_SYSTEM_PROMPT = """당신은 K뷰티 유튜브 쇼츠 스크립트 작가입니다.
-동남아 시장을 타겟으로 한국 K뷰티 정보를 32초 분량의 나레이션으로 작성합니다.
+SCRIPT_SYSTEM_PROMPT = """You are a K-beauty YouTube Shorts scriptwriter.
+Write 32-second English narration scripts targeting US/UK/Australian audiences.
+Use natural, conversational English — like talking to a friend, not reading an ad.
 
-반드시 JSON 형식으로만 응답하세요. 다른 텍스트는 포함하지 마세요.
+Respond only in JSON format. No other text.
 """
 
-# 유형별 시나리오 구조 정의
 SCENARIO_TEMPLATES = {
-    "새소식": """
-=== 새소식 시나리오 구조 (총 32초) ===
-- Hook (3초): 자극적 키워드로 시작. "품절", "대란", "난리" 등 사용. 제품명/카테고리 포함.
-- 공감유발 (5초): 소비자 기대감/니즈를 직접 언급. "이런 상황 있죠?" 형태.
-  → consumer_expectation 데이터 활용
-- 용도설명 (13초): 이 제품이 그 상황을 어떻게 해결하는지. 핵심 특징 1~2가지만.
-- 증거 (9초): 한국 반응 데이터. 게시물 수, 좋아요, 실제 반응 언급.
-- 구독유도 (2초): "한국 K뷰티 새소식 가장 빠르게 받고 싶다면 구독"
+    "new_find": """
+=== new_find Scenario Structure (32 seconds total) ===
+- Hook (3s): Lead with urgency. Use words like "sold out", "going viral", "everyone in Korea is". Include product/category name.
+- Relate (5s): Speak directly to the viewer's desire or situation.
+  → Use consumer_expectation data
+- What it does (13s): Explain how this product delivers that result. 1~2 key features only.
+- Proof (9s): Korean engagement data — post count, likes, sell-out speed.
+- Subscribe CTA (2s): "Follow for K-beauty finds before they blow up globally"
 
-끝맺음: 구독 유도 (구매 언급 없음, 링크는 설명란에만)
+Ending: subscribe CTA (no purchase mention — link goes in description)
 """,
-    "문제추천": """
-=== 문제추천 시나리오 구조 (총 32초) ===
-- Hook (3초): 문제 상황을 직접 언급. "~한 사람?" 형태로 공감 유도.
-  → consumer_problem 데이터 활용
-- 문제심화 (4초): 왜 기존 방법으로 해결이 안 됐는지.
-- 솔루션 (16초): 이 제품이 어떻게 다른지. 성분/특징/효과 구체적으로.
-  → 납득이 되어야 구매로 이어지므로 가장 긴 파트
-- 증거 (7초): 비슷한 피부 타입 한국 반응.
-- 구매유도 (2초): "링크는 설명란에"
+    "problem_solution": """
+=== problem_solution Scenario Structure (32 seconds total) ===
+- Hook (3s): Call out the skin problem directly. "If your [problem], you need to hear this."
+  → Use consumer_problem data
+- Agitate (4s): Why the usual products fail at solving this.
+- Solution (16s): How this K-beauty product is different. Be specific — ingredients, texture, result.
+  → This is the longest section because conviction = purchase
+- Proof (7s): Korean community reaction from people with same skin type.
+- Buy CTA (2s): "Link in description"
 
-끝맺음: 구매 유도
+Ending: purchase CTA
 """,
-    "관심상품": """
-=== 관심상품 시나리오 구조 (총 32초) ===
-- Hook (3초): 순위/숫자로 시작. "이번 달 올리브영 가장 많이 팔린 ~"
-- 제품 소개 (27초): 제품 수에 따라 균등 배분
-  → 3개: 제품당 9초 (3위→2위→1위 순서)
-  → 4개: 제품당 6~7초
-  각 제품마다: 제품명 + 핵심 특징 한 가지 + 왜 선택받는지
-- 구매유도 (2초): "링크는 설명란에"
+    "top_picks": """
+=== top_picks Scenario Structure (32 seconds total) ===
+- Hook (3s): Lead with number/ranking. "The [#] most repurchased K-beauty [category] right now"
+- Product Rundown (27s): Equal time per product
+  → 3 products: ~9s each (3rd → 2nd → 1st)
+  → 4 products: ~6~7s each
+  Each product: name + one key differentiator + why people keep buying it
+- Buy CTA (2s): "Links in description"
 
-끝맺음: 구매 유도
-제품은 products 목록에서 3~4개 선택. 없으면 trend_topic 기반으로 대표 제품 설정.
+Ending: purchase CTA
+Choose 3~4 products from the products list. If insufficient, use trend_topic to set representative products.
 """,
 }
 
-SCRIPT_USER_TEMPLATE = """다음 K뷰티 콘텐츠 후보의 스크립트를 작성해주세요.
+SCRIPT_USER_TEMPLATE = """Write an English YouTube Shorts script for this K-beauty content.
 
-=== 콘텐츠 정보 ===
-유형: {content_type}
-트렌드 주제: {trend_topic}
-제품 목록: {products}
-소비자 문제: {consumer_problem}
-소비자 기대감: {consumer_expectation}
-키워드: {keywords}
+=== Content Info ===
+Type: {content_type}
+Trend Topic: {trend_topic}
+Products: {products}
+Consumer Problem: {consumer_problem}
+Consumer Expectation: {consumer_expectation}
+Keywords: {keywords}
+
+=== Real Audience Insights (from YouTube comments & Reddit) ===
+Pain Points:
+{pain_points}
+
+Expectations:
+{expectations}
+
+Skin types in audience: {skin_types}
 
 {scenario_template}
 
-=== 작성 규칙 ===
-- 언어: 한국어, 자연스러운 구어체
-- 총 32초 분량 (약 160~180자)
-- 각 파트를 [Hook], [공감유발] 등 태그로 구분하여 작성
-- 과장·자극적 표현은 Hook에만 사용, 나머지는 팩트 중심
-- 동남아 시청자 기준: 한국 문화 배경 설명 불필요, 제품 정보 중심
+=== Writing Rules ===
+- Language: Natural conversational English (US/UK tone)
+- Total: 32 seconds (~80~100 words)
+- Mark each section with tags: [Hook], [Relate], [Solution], etc.
+- Hook only can be dramatic — rest should be factual and specific
+- Avoid generic beauty language ("amazing", "holy grail") — be concrete
+- If skin types are diverse, briefly acknowledge ("works across skin types" or "especially for oily skin")
 
-=== 응답 형식 (JSON) ===
+=== Response Format (JSON) ===
 {{
-  "shorts_title": "유튜브 쇼츠 제목 (30자 이내, 숫자/트렌드/궁금증 활용)",
-  "hook_line": "첫 3초 후킹 문구 (15자 이내)",
-  "shorts_script": "전체 나레이션 스크립트 ([Hook] ... [공감유발] ... 형태로 파트 구분)",
+  "shorts_title": "YouTube Shorts title (under 60 chars, use numbers/curiosity/trend)",
+  "hook_line": "First 3-second hook (under 10 words)",
+  "shorts_script": "Full narration with [Hook] [Relate] etc. section tags",
   "script_duration_sec": 32
 }}
 """
@@ -152,17 +171,17 @@ def _build_posts_text(posts: list[dict]) -> str:
     """게시물 목록을 프롬프트용 텍스트로 변환."""
     lines = []
     for i, post in enumerate(posts):
-        caption = (post.get("caption") or "캡션 없음")[:500]
+        caption = (post.get("caption") or "no caption")[:500]
         lines.append(
-            f"[{i}] 해시태그: #{post['hashtag']} | "
-            f"좋아요: {post['likes_count']} | "
-            f"캡션: {caption}"
+            f"[{i}] hashtag: #{post['hashtag']} | "
+            f"likes: {post['likes_count']} | "
+            f"caption: {caption}"
         )
     return "\n\n".join(lines)
 
 
 def _parse_json(raw_text: str) -> any:
-    """Claude 응답에서 JSON 파싱. ```json 블록 처리 포함."""
+    """Claude 응답에서 JSON 파싱."""
     text = raw_text.strip()
     if text.startswith("```"):
         text = text.split("```")[1]
@@ -174,7 +193,7 @@ def _parse_json(raw_text: str) -> any:
 def classify_posts(posts: list[dict], client: anthropic.Anthropic) -> list[dict]:
     """
     1단계: 게시물을 세 가지 콘텐츠 유형으로 분류.
-    
+
     Returns:
         분류 결과 목록 (relevance_score >= 0.6만 포함)
     """
@@ -196,17 +215,41 @@ def classify_posts(posts: list[dict], client: anthropic.Anthropic) -> list[dict]
     return results
 
 
+def _collect_pain_points(products: list[str]) -> dict:
+    """
+    제품 목록에서 소구점을 수집합니다.
+    YouTube 댓글 + Reddit 병합 결과를 반환합니다.
+    """
+    if not products:
+        return {"consumer_problems": [], "consumer_expectations": [], "signal_strength": 0.0}
+
+    # 첫 번째 제품으로 검색 (가장 대표 제품)
+    keyword = products[0]
+
+    logger.info(f"소구점 수집 시작: '{keyword}'")
+    yt_data     = yt_pain_points(keyword)
+    reddit_data = reddit_pain_points(keyword)
+    merged      = merge_pain_points(yt_data, reddit_data)
+
+    logger.info(
+        f"소구점 수집 완료: problems={len(merged['consumer_problems'])}, "
+        f"signal={merged['signal_strength']}"
+    )
+    return merged
+
+
 def generate_script(classified: dict, client: anthropic.Anthropic) -> dict:
     """
-    2단계: 분류된 후보 하나에 대해 유형별 시나리오로 스크립트 생성.
-    
+    2단계: 분류된 후보 하나에 대해 유형별 시나리오로 영어 스크립트 생성.
+
     Args:
-        classified: classify_posts 결과 항목 하나
+        classified: classify_posts 결과 항목 하나 (pain_points 포함)
     Returns:
         shorts_title, hook_line, shorts_script 포함한 dict
     """
-    content_type = classified.get("content_type", "새소식")
-    scenario_template = SCENARIO_TEMPLATES.get(content_type, SCENARIO_TEMPLATES["새소식"])
+    content_type      = classified.get("content_type", "new_find")
+    scenario_template = SCENARIO_TEMPLATES.get(content_type, SCENARIO_TEMPLATES["new_find"])
+    pain_points       = classified.get("pain_points", {})
 
     message = client.messages.create(
         model=config.CLAUDE_MODEL,
@@ -218,9 +261,24 @@ def generate_script(classified: dict, client: anthropic.Anthropic) -> dict:
                 content_type=content_type,
                 trend_topic=classified.get("trend_topic", ""),
                 products=", ".join(classified.get("products", [])),
-                consumer_problem=classified.get("consumer_problem") or "해당없음",
-                consumer_expectation=classified.get("consumer_expectation") or "해당없음",
+                consumer_problem=(
+                    classified.get("consumer_problem") or
+                    "; ".join(pain_points.get("consumer_problems", [])[:2]) or
+                    "N/A"
+                ),
+                consumer_expectation=(
+                    classified.get("consumer_expectation") or
+                    "; ".join(pain_points.get("consumer_expectations", [])[:2]) or
+                    "N/A"
+                ),
                 keywords=", ".join(classified.get("keywords", [])),
+                pain_points="\n".join(
+                    f"- {p}" for p in pain_points.get("consumer_problems", [])
+                ) or "N/A",
+                expectations="\n".join(
+                    f"- {e}" for e in pain_points.get("consumer_expectations", [])
+                ) or "N/A",
+                skin_types=", ".join(pain_points.get("skin_types_mentioned", [])) or "general",
                 scenario_template=scenario_template,
             ),
         }],
@@ -231,12 +289,7 @@ def generate_script(classified: dict, client: anthropic.Anthropic) -> dict:
 
 def analyze_posts(posts: list[dict]) -> list[dict]:
     """
-    게시물 목록을 분류 → 스크립트 생성 두 단계로 처리.
-    
-    Args:
-        posts: DB에서 가져온 raw_posts 목록
-    Returns:
-        최종 콘텐츠 후보 목록
+    게시물 목록을 분류 → 소구점 수집 → 스크립트 생성 세 단계로 처리.
     """
     if not config.ANTHROPIC_API_KEY:
         raise RuntimeError("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
@@ -246,10 +299,15 @@ def analyze_posts(posts: list[dict]) -> list[dict]:
     # 1단계: 분류
     classified_list = classify_posts(posts, client)
 
-    # 2단계: 유형별 스크립트 생성
+    # 2단계: 소구점 수집 + 스크립트 생성
     results = []
     for classified in classified_list:
         try:
+            # 소구점 수집 (YouTube + Reddit)
+            pain_points = _collect_pain_points(classified.get("products", []))
+            classified["pain_points"] = pain_points
+
+            # 영어 스크립트 생성
             script = generate_script(classified, client)
             results.append({**classified, **script})
             logger.info(
@@ -266,11 +324,8 @@ def analyze_posts(posts: list[dict]) -> list[dict]:
 
 def run_analysis(batch_size: int = 10) -> int:
     """
-    미분석 게시물을 가져와 분류 + 스크립트 생성 후 후보 DB에 저장.
+    미분석 게시물을 가져와 분류 + 소구점 수집 + 스크립트 생성 후 후보 DB에 저장.
     스케줄러에서 호출하는 진입점.
-
-    Returns:
-        저장된 콘텐츠 후보 수
     """
     posts = db.get_unprocessed_posts(limit=batch_size)
     if not posts:
@@ -289,20 +344,28 @@ def run_analysis(batch_size: int = 10) -> int:
         if idx >= len(posts):
             continue
 
-        post = posts[idx]
+        post      = posts[idx]
+        pain_data = result.get("pain_points", {})
+
         candidate = {
-            "raw_post_id": post["id"],
-            "content_type": result["content_type"],        # 신규
-            "trend_topic": result["trend_topic"],
-            "products": result["products"],
-            "keywords": result["keywords"],
-            "relevance_score": result["relevance_score"],
-            "consumer_problem": result.get("consumer_problem"),   # 신규
-            "consumer_expectation": result.get("consumer_expectation"),  # 신규
-            "shorts_title": result["shorts_title"],
-            "shorts_script": result["shorts_script"],
-            "hook_line": result["hook_line"],
-            "status": "pending",
+            "raw_post_id":           post["id"],
+            "content_type":          result["content_type"],
+            "trend_topic":           result["trend_topic"],
+            "products":              result["products"],
+            "keywords":              result["keywords"],
+            "relevance_score":       result["relevance_score"],
+            "consumer_problem":      (
+                result.get("consumer_problem") or
+                "; ".join(pain_data.get("consumer_problems", [])[:2])
+            ),
+            "consumer_expectation":  (
+                result.get("consumer_expectation") or
+                "; ".join(pain_data.get("consumer_expectations", [])[:2])
+            ),
+            "shorts_title":          result["shorts_title"],
+            "shorts_script":         result["shorts_script"],
+            "hook_line":             result["hook_line"],
+            "status":                "pending",
         }
 
         if db.insert_candidate(candidate):
