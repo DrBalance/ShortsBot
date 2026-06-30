@@ -4,7 +4,7 @@ collector/claude_analyzer.py
 
 파이프라인:
   인스타(한/일) → 트렌드 분류 → 제품명 추출
-  → YouTube 댓글 + Reddit → 소구점 수집
+  → YouTube 댓글 → 소구점 수집 (Reddit은 추후 추가 예정)
   → 영어 스크립트 생성
 
 콘텐츠 유형 3가지:
@@ -19,10 +19,6 @@ import anthropic
 from config import config
 from db import supabase_client as db
 from youtube_collector import collect_pain_points_for_product as yt_pain_points
-from reddit_collector import (
-    collect_pain_points_for_product as reddit_pain_points,
-    merge_pain_points,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +132,7 @@ Consumer Problem: {consumer_problem}
 Consumer Expectation: {consumer_expectation}
 Keywords: {keywords}
 
-=== Real Audience Insights (from YouTube comments & Reddit) ===
+=== Real Audience Insights (from YouTube comments) ===
 Pain Points:
 {pain_points}
 
@@ -215,10 +211,15 @@ def classify_posts(posts: list[dict], client: anthropic.Anthropic) -> list[dict]
     return results
 
 
-def _collect_pain_points(products: list[str]) -> dict:
+def _collect_pain_points(products: list[str], cache: dict | None = None) -> dict:
     """
     제품 목록에서 소구점을 수집합니다.
-    YouTube 댓글 + Reddit 병합 결과를 반환합니다.
+    YouTube 댓글 기반 (Reddit은 추후 추가 예정).
+
+    Args:
+        cache: {product_keyword: pain_points} 형태의 메모리 캐시.
+               같은 배치 안에서 동일 제품이 여러 후보에 등장할 때
+               YouTube API 중복 호출을 막기 위함.
     """
     if not products:
         return {"consumer_problems": [], "consumer_expectations": [], "signal_strength": 0.0}
@@ -226,16 +227,22 @@ def _collect_pain_points(products: list[str]) -> dict:
     # 첫 번째 제품으로 검색 (가장 대표 제품)
     keyword = products[0]
 
+    if cache is not None and keyword in cache:
+        logger.info(f"소구점 캐시 적중: '{keyword}' (YouTube 재수집 스킵)")
+        return cache[keyword]
+
     logger.info(f"소구점 수집 시작: '{keyword}'")
-    yt_data     = yt_pain_points(keyword)
-    reddit_data = reddit_pain_points(keyword)
-    merged      = merge_pain_points(yt_data, reddit_data)
+    pain_points = yt_pain_points(keyword)
 
     logger.info(
-        f"소구점 수집 완료: problems={len(merged['consumer_problems'])}, "
-        f"signal={merged['signal_strength']}"
+        f"소구점 수집 완료: problems={len(pain_points.get('consumer_problems', []))}, "
+        f"signal={pain_points.get('signal_strength', 0.0)}"
     )
-    return merged
+
+    if cache is not None:
+        cache[keyword] = pain_points
+
+    return pain_points
 
 
 def generate_script(classified: dict, client: anthropic.Anthropic) -> dict:
@@ -300,11 +307,14 @@ def analyze_posts(posts: list[dict]) -> list[dict]:
     classified_list = classify_posts(posts, client)
 
     # 2단계: 소구점 수집 + 스크립트 생성
+    # pain_points_cache: 같은 배치 안에서 동일 제품이 여러 후보에 등장할 때
+    # YouTube 댓글 수집을 한 번만 수행하기 위한 캐시
+    pain_points_cache: dict = {}
     results = []
     for classified in classified_list:
         try:
-            # 소구점 수집 (YouTube + Reddit)
-            pain_points = _collect_pain_points(classified.get("products", []))
+            # 소구점 수집 (캐시 적용)
+            pain_points = _collect_pain_points(classified.get("products", []), cache=pain_points_cache)
             classified["pain_points"] = pain_points
 
             # 영어 스크립트 생성

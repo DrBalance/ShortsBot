@@ -35,6 +35,9 @@ class Config:
     MIN_LIKES: int = 100          # 최소 좋아요 수
     MAX_POSTS_PER_HASHTAG: int = 30  # 해시태그당 최대 수집 게시물
 
+    # ─── Google ──────────────────────────────────────
+    GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
+
     # ─── Anthropic ───────────────────────────────────
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     CLAUDE_MODEL: str = "claude-sonnet-4-6"
