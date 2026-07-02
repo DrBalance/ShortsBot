@@ -384,4 +384,3 @@ if __name__ == "__main__":
         path, target_duration=target, n_transitions=transitions, start_offset=manual_offset
     )
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
-

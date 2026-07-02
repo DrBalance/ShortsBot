@@ -78,47 +78,53 @@ relevance_score criteria:
 # ─── 2단계: 스크립트 생성 프롬프트 ──────────────────────────────
 
 SCRIPT_SYSTEM_PROMPT = """You are a K-beauty YouTube Shorts scriptwriter.
-Write 32-second English narration scripts targeting US/UK/Australian audiences.
+Write English narration scripts targeting US/UK/Australian/Canadian audiences,
+timed to fit an exact set of scene slots (in seconds) derived from beat-synced music.
 Use natural, conversational English — like talking to a friend, not reading an ad.
 
 Respond only in JSON format. No other text.
 """
 
-SCENARIO_TEMPLATES = {
+# content_type별 "장면 역할" 정의.
+# 실제 초 배분은 beat_sync.py가 계산한 scenes(장면 개수 + 각 duration)를 그대로 따른다.
+# 여기서는 몇 번째 장면이 어떤 서사 역할을 맡는지만 정의한다.
+SCENARIO_ROLE_TEMPLATES = {
     "new_find": """
-=== new_find Scenario Structure (32 seconds total) ===
-- Hook (3s): Lead with urgency. Use words like "sold out", "going viral", "everyone in Korea is". Include product/category name.
-- Relate (5s): Speak directly to the viewer's desire or situation.
-  → Use consumer_expectation data
-- What it does (13s): Explain how this product delivers that result. 1~2 key features only.
-- Proof (9s): Korean engagement data — post count, likes, sell-out speed.
-- Subscribe CTA (2s): "Follow for K-beauty finds before they blow up globally"
+=== new_find Scene Roles (Information Gap) ===
+Map the narration to the given scene slots in this order:
+1. Hook — Lead with urgency. Use words like "sold out", "going viral", "everyone in Korea is".
+   Include product/category name.
+2. Relate — Speak directly to the viewer's desire or situation. → Use consumer_expectation data.
+3. What it does — Explain how this product delivers that result. 1~2 key features only.
+   (If more than 4 scenes exist, this role may span multiple consecutive scenes.)
+4. Proof — Korean engagement data: post count, likes, sell-out speed.
+5. Subscribe CTA (last scene) — "Follow for K-beauty finds before they blow up globally"
 
-Ending: subscribe CTA (no purchase mention — link goes in description)
+No purchase mention — link goes in description only.
 """,
     "problem_solution": """
-=== problem_solution Scenario Structure (32 seconds total) ===
-- Hook (3s): Call out the skin problem directly. "If your [problem], you need to hear this."
-  → Use consumer_problem data
-- Agitate (4s): Why the usual products fail at solving this.
-- Solution (16s): How this K-beauty product is different. Be specific — ingredients, texture, result.
-  → This is the longest section because conviction = purchase
-- Proof (7s): Korean community reaction from people with same skin type.
-- Buy CTA (2s): "Link in description"
-
-Ending: purchase CTA
+=== problem_solution Scene Roles (Problem Oriented Solution) ===
+Map the narration to the given scene slots in this order:
+1. Hook — Call out the skin problem directly. "If your [problem], you need to hear this."
+   → Use consumer_problem data.
+2. Agitate — Why the usual products fail at solving this.
+3. Solution — How this K-beauty product is different. Be specific — ingredients, texture, result.
+   (This is the core conviction section — if more than 4 scenes exist, this role may span
+   multiple consecutive scenes, since conviction drives purchase.)
+4. Proof — Korean community reaction from people with the same skin type.
+5. Buy CTA (last scene) — "Link in description"
 """,
     "top_picks": """
-=== top_picks Scenario Structure (32 seconds total) ===
-- Hook (3s): Lead with number/ranking. "The [#] most repurchased K-beauty [category] right now"
-- Product Rundown (27s): Equal time per product
-  → 3 products: ~9s each (3rd → 2nd → 1st)
-  → 4 products: ~6~7s each
-  Each product: name + one key differentiator + why people keep buying it
-- Buy CTA (2s): "Links in description"
+=== top_picks Scene Roles (Social Proof / Rankings) ===
+Map the narration to the given scene slots in this order:
+1. Hook — Lead with number/ranking. "The [#] most repurchased K-beauty [category] right now"
+2..N-1. Product Rundown — Distribute products roughly evenly across the remaining scenes
+   before the last one (reveal order: lowest rank → highest rank, e.g. 3rd → 2nd → 1st).
+   Each product gets: name + one key differentiator + why people keep buying it.
+N. Buy CTA (last scene) — "Links in description"
 
-Ending: purchase CTA
-Choose 3~4 products from the products list. If insufficient, use trend_topic to set representative products.
+Choose 3~4 products from the products list. If insufficient, use trend_topic to set
+representative products.
 """,
 }
 
@@ -141,24 +147,59 @@ Expectations:
 
 Skin types in audience: {skin_types}
 
-{scenario_template}
+=== Scene Slots (beat-synced, in seconds — from beat_sync.py) ===
+Total duration: {total_duration:.1f}s across {scene_count} scenes.
+You MUST write one narration segment per scene below, sized to be speakable within that
+scene's duration at a natural conversational pace (~2.3 words/second as a rough guide).
+{scene_slots_text}
+
+{scenario_role_template}
 
 === Writing Rules ===
 - Language: Natural conversational English (US/UK tone)
-- Total: 32 seconds (~80~100 words)
-- Mark each section with tags: [Hook], [Relate], [Solution], etc.
+- Total duration: {total_duration:.1f} seconds — this comes from the actual music edit,
+  not a fixed script length. Do not pad or shorten to hit a round number.
+- Each item in "scenes" in your response must correspond 1:1 to a Scene Slot above,
+  in the same order, and must fit within that scene's duration.
 - Hook only can be dramatic — rest should be factual and specific
 - Avoid generic beauty language ("amazing", "holy grail") — be concrete
-- If skin types are diverse, briefly acknowledge ("works across skin types" or "especially for oily skin")
+- If skin types are diverse, briefly acknowledge ("works across skin types" or
+  "especially for oily skin")
 
 === Response Format (JSON) ===
 {{
   "shorts_title": "YouTube Shorts title (under 60 chars, use numbers/curiosity/trend)",
-  "hook_line": "First 3-second hook (under 10 words)",
-  "shorts_script": "Full narration with [Hook] [Relate] etc. section tags",
-  "script_duration_sec": 32
+  "hook_line": "First scene's hook line (under 10 words)",
+  "scenes": [
+    {{
+      "scene_index": 0,
+      "start": 0.0,
+      "end": 0.0,
+      "role": "hook | relate | solution | proof | product_rundown | cta | ...",
+      "text": "narration text for this scene only"
+    }}
+  ],
+  "shorts_script": "Full narration, all scenes joined with [ROLE] section tags",
+  "script_duration_sec": {total_duration:.1f}
 }}
 """
+
+
+def _format_scene_slots(scenes: list[dict]) -> str:
+    """
+    beat_sync.py의 scenes 리스트를 프롬프트에 넣을 텍스트로 변환.
+
+    Args:
+        scenes: [{"index": int, "start": float, "end": float, "duration": float}, ...]
+                BeatSyncResult.scenes를 to_dict() 한 리스트, 또는 동일 스키마의 dict 리스트.
+    """
+    lines = []
+    for s in scenes:
+        lines.append(
+            f"  - Scene {s['index']}: {s['start']:.2f}s ~ {s['end']:.2f}s "
+            f"(duration {s['duration']:.2f}s)"
+        )
+    return "\n".join(lines)
 
 
 # ─── 핵심 함수 ───────────────────────────────────────────────────
@@ -245,22 +286,33 @@ def _collect_pain_points(products: list[str], cache: dict | None = None) -> dict
     return pain_points
 
 
-def generate_script(classified: dict, client: anthropic.Anthropic) -> dict:
+def generate_script(classified: dict, scenes: list[dict], client: anthropic.Anthropic) -> dict:
     """
-    2단계: 분류된 후보 하나에 대해 유형별 시나리오로 영어 스크립트 생성.
+    2단계: 분류된 후보 하나에 대해, beat_sync.py가 계산한 장면 슬롯에 맞춰
+    영어 스크립트를 생성.
 
     Args:
         classified: classify_posts 결과 항목 하나 (pain_points 포함)
+        scenes: beat_sync.compute_scene_slots(...).scenes를 dict 리스트로 변환한 것
+                (각 항목: {"index", "start", "end", "duration"})
     Returns:
-        shorts_title, hook_line, shorts_script 포함한 dict
+        shorts_title, hook_line, shorts_script, scenes(장면별 텍스트) 포함한 dict
     """
-    content_type      = classified.get("content_type", "new_find")
-    scenario_template = SCENARIO_TEMPLATES.get(content_type, SCENARIO_TEMPLATES["new_find"])
-    pain_points       = classified.get("pain_points", {})
+    if not scenes:
+        raise ValueError(
+            "scenes가 비어있습니다. generate_script는 beat_sync.py의 장면 슬롯 없이는 "
+            "호출할 수 없습니다 (32초 고정 방식은 폐기됨, TODO Phase 1-3)."
+        )
+
+    content_type       = classified.get("content_type", "new_find")
+    scenario_role_text = SCENARIO_ROLE_TEMPLATES.get(content_type, SCENARIO_ROLE_TEMPLATES["new_find"])
+    pain_points         = classified.get("pain_points", {})
+
+    total_duration = scenes[-1]["end"] - scenes[0]["start"]
 
     message = client.messages.create(
         model=config.CLAUDE_MODEL,
-        max_tokens=1024,
+        max_tokens=1536,
         system=SCRIPT_SYSTEM_PROMPT,
         messages=[{
             "role": "user",
@@ -286,7 +338,10 @@ def generate_script(classified: dict, client: anthropic.Anthropic) -> dict:
                     f"- {e}" for e in pain_points.get("consumer_expectations", [])
                 ) or "N/A",
                 skin_types=", ".join(pain_points.get("skin_types_mentioned", [])) or "general",
-                scenario_template=scenario_template,
+                total_duration=total_duration,
+                scene_count=len(scenes),
+                scene_slots_text=_format_scene_slots(scenes),
+                scenario_role_template=scenario_role_text,
             ),
         }],
     )
@@ -294,12 +349,24 @@ def generate_script(classified: dict, client: anthropic.Anthropic) -> dict:
     return _parse_json(message.content[0].text)
 
 
-def analyze_posts(posts: list[dict]) -> list[dict]:
+def analyze_posts(posts: list[dict], scenes: list[dict]) -> list[dict]:
     """
     게시물 목록을 분류 → 소구점 수집 → 스크립트 생성 세 단계로 처리.
+
+    Args:
+        scenes: beat_sync.compute_scene_slots(...).scenes를 dict 리스트로 변환한 것
+                (각 항목: {"index", "start", "end", "duration"}).
+                필수 인자 — 실제 음원 기반 장면 슬롯 없이는 스크립트를 생성하지 않는다.
+                호출 전에 beat_sync.compute_scene_slots(audio_path)로 먼저 계산할 것.
     """
     if not config.ANTHROPIC_API_KEY:
         raise RuntimeError("ANTHROPIC_API_KEY가 설정되지 않았습니다.")
+
+    if not scenes:
+        raise ValueError(
+            "scenes가 비어있습니다. beat_sync.compute_scene_slots(audio_path)로 먼저 "
+            "장면 슬롯을 계산한 뒤 넘겨야 합니다. (Phase 1-3 확정: 폴백 없음)"
+        )
 
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
@@ -317,8 +384,8 @@ def analyze_posts(posts: list[dict]) -> list[dict]:
             pain_points = _collect_pain_points(classified.get("products", []), cache=pain_points_cache)
             classified["pain_points"] = pain_points
 
-            # 영어 스크립트 생성
-            script = generate_script(classified, client)
+            # 영어 스크립트 생성 (beat_sync 장면 슬롯 기준)
+            script = generate_script(classified, scenes, client)
             results.append({**classified, **script})
             logger.info(
                 f"스크립트 생성 완료: [{classified['content_type']}] "
@@ -332,10 +399,14 @@ def analyze_posts(posts: list[dict]) -> list[dict]:
     return results
 
 
-def run_analysis(batch_size: int = 10) -> int:
+def run_analysis(batch_size: int, scenes: list[dict]) -> int:
     """
     미분석 게시물을 가져와 분류 + 소구점 수집 + 스크립트 생성 후 후보 DB에 저장.
     스케줄러에서 호출하는 진입점.
+
+    Args:
+        scenes: beat_sync.compute_scene_slots(audio_path).scenes를 dict 리스트로 변환한 것.
+                필수 인자. 실제 배치 실행 전 음원을 골라 beat_sync로 계산해둘 것.
     """
     posts = db.get_unprocessed_posts(limit=batch_size)
     if not posts:
@@ -343,7 +414,7 @@ def run_analysis(batch_size: int = 10) -> int:
         return 0
 
     try:
-        analysis_results = analyze_posts(posts)
+        analysis_results = analyze_posts(posts, scenes=scenes)
     except Exception as e:
         logger.error(f"분석 실패: {e}")
         return 0
@@ -375,6 +446,8 @@ def run_analysis(batch_size: int = 10) -> int:
             "shorts_title":          result["shorts_title"],
             "shorts_script":         result["shorts_script"],
             "hook_line":             result["hook_line"],
+            "scenes":                result.get("scenes", []),          # 장면별 텍스트+타이밍 (Phase 2에서 사용)
+            "script_duration_sec":   result.get("script_duration_sec"),  # beat_sync 기반 실제 길이 (35초+)
             "status":                "pending",
         }
 
