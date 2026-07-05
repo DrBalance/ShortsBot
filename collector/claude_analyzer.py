@@ -149,8 +149,8 @@ Skin types in audience: {skin_types}
 
 === Scene Slots (beat-synced, in seconds — from beat_sync.py) ===
 Total duration: {total_duration:.1f}s across {scene_count} scenes.
-You MUST write one narration segment per scene below, sized to be speakable within that
-scene's duration at a natural conversational pace (~2.3 words/second as a rough guide).
+Each scene shows its target word count. This is a HARD constraint — staying within
+±2 words of the target is mandatory. Count words carefully before finalizing each scene.
 {scene_slots_text}
 
 {scenario_role_template}
@@ -188,16 +188,22 @@ scene's duration at a natural conversational pace (~2.3 words/second as a rough 
 def _format_scene_slots(scenes: list[dict]) -> str:
     """
     beat_sync.py의 scenes 리스트를 프롬프트에 넣을 텍스트로 변환.
+    씬별 목표 단어 수를 계산해서 명시적으로 포함한다.
 
     Args:
         scenes: [{"index": int, "start": float, "end": float, "duration": float}, ...]
                 BeatSyncResult.scenes를 to_dict() 한 리스트, 또는 동일 스키마의 dict 리스트.
     """
+    # Sarah 보이스 실측 기반 (2026-07-05 캘리브레이션):
+    # 실측 평균: 14~18단어 텍스트에서 2.8~3.0 wps로 발화됨
+    # hook 씬도 비슷한 속도로 읽히므로 구분하지 않음
+    WORDS_PER_SEC = 2.8
     lines = []
-    for s in scenes:
+    for i, s in enumerate(scenes):
+        target_words = round(s['duration'] * WORDS_PER_SEC)
         lines.append(
             f"  - Scene {s['index']}: {s['start']:.2f}s ~ {s['end']:.2f}s "
-            f"(duration {s['duration']:.2f}s)"
+            f"(duration {s['duration']:.2f}s → write exactly ~{target_words} words)"
         )
     return "\n".join(lines)
 
