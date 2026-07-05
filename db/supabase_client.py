@@ -26,7 +26,7 @@ def get_client() -> Client:
 def upsert_raw_post(post: dict) -> Optional[dict]:
     """
     인스타 게시물을 저장합니다. 이미 수집된 게시물은 무시합니다.
-    
+
     Args:
         post: {instagram_id, hashtag, caption, likes_count, comments_count,
                image_urls, posted_at}
@@ -56,7 +56,7 @@ def get_unprocessed_posts(limit: int = 20) -> list[dict]:
         client.table("kbeauty_raw_posts")
         .select("*")
         .eq("is_processed", False)
-        .order("likes_count", desc=True)   # 좋아요 많은 순
+        .order("likes_count", desc=True)
         .limit(limit)
         .execute()
     )
@@ -77,10 +77,12 @@ def mark_post_processed(post_id: str) -> None:
 def insert_candidate(candidate: dict) -> Optional[dict]:
     """
     Claude 분석 결과를 콘텐츠 후보로 저장.
-    
+
     Args:
         candidate: {raw_post_id, trend_topic, products, keywords,
-                    relevance_score, shorts_title, shorts_script, hook_line}
+                    relevance_score, shorts_title, shorts_script, hook_line,
+                    content_type, consumer_problem, consumer_expectation,
+                    scenes, prdt_no, product_image_url, scene_image_url}
     """
     client = get_client()
     try:
@@ -96,13 +98,43 @@ def insert_candidate(candidate: dict) -> Optional[dict]:
         return None
 
 
-def get_pending_candidates(limit: int = 5) -> list[dict]:
-    """제작 대기 중인 후보 목록 조회 (관련도 높은 순)."""
+def get_candidate(candidate_id: str) -> Optional[dict]:
+    """
+    단일 candidate 조회.
+
+    Args:
+        candidate_id: kbeauty_content_candidates.id (UUID 문자열)
+    Returns:
+        candidate dict 또는 None
+    """
+    client = get_client()
+    try:
+        result = (
+            client.table("kbeauty_content_candidates")
+            .select("*")
+            .eq("id", candidate_id)
+            .single()
+            .execute()
+        )
+        return result.data
+    except Exception as e:
+        logger.error(f"candidate 조회 실패 ({candidate_id}): {e}")
+        return None
+
+
+def get_candidates_by_status(status: str, limit: int = 5) -> list[dict]:
+    """
+    특정 status의 candidate 목록 조회.
+
+    Args:
+        status: 'pending' | 'video_ready' | 'generation_failed' 등
+        limit: 최대 조회 수
+    """
     client = get_client()
     result = (
         client.table("kbeauty_content_candidates")
-        .select("*, kbeauty_raw_posts(image_urls)")
-        .eq("status", "pending")
+        .select("*")
+        .eq("status", status)
         .order("relevance_score", desc=True)
         .limit(limit)
         .execute()
@@ -110,12 +142,74 @@ def get_pending_candidates(limit: int = 5) -> list[dict]:
     return result.data or []
 
 
-def update_candidate_status(candidate_id: str, status: str) -> None:
-    """후보 상태 업데이트."""
+def get_pending_candidates(limit: int = 5) -> list[dict]:
+    """제작 대기 중인 후보 목록 조회 (관련도 높은 순). 하위 호환용."""
+    return get_candidates_by_status("pending", limit=limit)
+
+
+def update_candidate_status(
+    candidate_id: str,
+    status: str,
+    extra: Optional[dict] = None,
+) -> None:
+    """
+    후보 상태 업데이트. 추가 필드도 함께 업데이트 가능.
+
+    Args:
+        candidate_id: kbeauty_content_candidates.id
+        status: 변경할 status 값
+        extra: 함께 업데이트할 추가 필드 dict
+               예: {"video_url": "...", "video_engine": "kling"}
+    """
+    client = get_client()
+    payload = {"status": status}
+    if extra:
+        payload.update(extra)
+    client.table("kbeauty_content_candidates").update(
+        payload
+    ).eq("id", candidate_id).execute()
+    logger.info(f"candidate 상태 업데이트: {candidate_id} → {status}")
+
+
+def update_candidate_scene_image(
+    candidate_id: str,
+    scene_image_url: str,
+) -> None:
+    """
+    ChatGPT로 생성한 9:16 배경 합성 이미지 URL 저장.
+    큐레이터가 이미지 생성 후 수동으로 호출.
+
+    Args:
+        candidate_id: kbeauty_content_candidates.id
+        scene_image_url: R2에 업로드된 9:16 이미지 URL
+    """
     client = get_client()
     client.table("kbeauty_content_candidates").update(
-        {"status": status}
+        {"scene_image_url": scene_image_url}
     ).eq("id", candidate_id).execute()
+    logger.info(f"scene_image_url 저장: {candidate_id}")
+
+
+def update_candidate_product_info(
+    candidate_id: str,
+    prdt_no: str,
+    product_image_url: str,
+) -> None:
+    """
+    Olive Young 제품 정보(prdtNo + og:image URL) 저장.
+    큐레이터가 큐레이터 링크 생성 후 수동으로 호출.
+
+    Args:
+        candidate_id: kbeauty_content_candidates.id
+        prdt_no: Olive Young 제품 번호 (예: "GA210004538")
+        product_image_url: Olive Young CDN 이미지 URL
+    """
+    client = get_client()
+    client.table("kbeauty_content_candidates").update({
+        "prdt_no": prdt_no,
+        "product_image_url": product_image_url,
+    }).eq("id", candidate_id).execute()
+    logger.info(f"제품 정보 저장: {candidate_id}, prdtNo={prdt_no}")
 
 
 # ─── 영상 ────────────────────────────────────────────────────

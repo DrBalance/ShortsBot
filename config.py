@@ -32,8 +32,8 @@ class Config:
     ]
 
     # 필터링 기준
-    MIN_LIKES: int = 100          # 최소 좋아요 수
-    MAX_POSTS_PER_HASHTAG: int = 30  # 해시태그당 최대 수집 게시물
+    MIN_LIKES: int = 100
+    MAX_POSTS_PER_HASHTAG: int = 30
 
     # ─── Google ──────────────────────────────────────
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
@@ -54,12 +54,27 @@ class Config:
 
     # ─── ElevenLabs ──────────────────────────────────
     ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
-    # 한국어 여성 보이스 ID (ElevenLabs 라이브러리에서 교체 가능)
-    ELEVENLABS_VOICE_ID: str = os.getenv("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB")
+    ELEVENLABS_VOICE_ID: str = os.getenv(
+        "ELEVENLABS_VOICE_ID",
+        "EXAVITQu4vr4xnSDxMaL",   # Sarah — US English, news presenter style
+    )
 
     # ─── Kling ───────────────────────────────────────
-    KLING_ACCESS_KEY: str = os.getenv("KLING_ACCESS_KEY", "")
-    KLING_SECRET_KEY: str = os.getenv("KLING_SECRET_KEY", "")
+    # 공식 Kling AI API Platform (kling.ai/document-api)
+    # 인증 방식: 단일 API Key → "Bearer {key}" 헤더
+    # API Key 형식: api-key-kling-...
+    KLING_API_KEY: str = os.getenv("KLING_API_KEY", "")
+
+    # ─── Vidu ────────────────────────────────────────
+    # 공식 Vidu API Platform (platform.vidu.com)
+    # 인증 방식: API Key → "Token {key}" 헤더
+    VIDU_API_KEY: str = os.getenv("VIDU_API_KEY", "")
+
+    # ─── 영상 생성 엔진 선택 ──────────────────────────
+    # "kling" : Kling v3.0 (현재 Trial Package 소진 중)
+    # "vidu"  : Vidu Q3 (Kling 소진 후 전환)
+    # 전환 시 이 값만 바꾸면 됨 — 코드 수정 불필요
+    VIDEO_ENGINE: str = os.getenv("VIDEO_ENGINE", "kling")
 
     # ─── YouTube ─────────────────────────────────────
     YOUTUBE_CLIENT_ID: str = os.getenv("YOUTUBE_CLIENT_ID", "")
@@ -77,8 +92,8 @@ class Config:
 
     # ─── 대상 언어 ────────────────────────────────────
     TARGET_LANGUAGES: list[dict] = [
-        {"code": "ko", "name": "한국어"},
         {"code": "en", "name": "English"},
+        {"code": "ko", "name": "한국어"},
         {"code": "th", "name": "ภาษาไทย"},
         {"code": "vi", "name": "Tiếng Việt"},
         {"code": "id", "name": "Bahasa Indonesia"},
@@ -87,10 +102,12 @@ class Config:
     def validate(self) -> list[str]:
         """필수 키가 설정되어 있는지 확인. 누락된 키 목록 반환."""
         required = {
-            "APIFY_API_TOKEN": self.APIFY_API_TOKEN,
-            "ANTHROPIC_API_KEY": self.ANTHROPIC_API_KEY,
-            "SUPABASE_URL": self.SUPABASE_URL,
+            "APIFY_API_TOKEN":      self.APIFY_API_TOKEN,
+            "ANTHROPIC_API_KEY":    self.ANTHROPIC_API_KEY,
+            "SUPABASE_URL":         self.SUPABASE_URL,
             "SUPABASE_SERVICE_KEY": self.SUPABASE_SERVICE_KEY,
+            "ELEVENLABS_API_KEY":   self.ELEVENLABS_API_KEY,
+            "KLING_API_KEY":        self.KLING_API_KEY,
         }
         return [k for k, v in required.items() if not v]
 
