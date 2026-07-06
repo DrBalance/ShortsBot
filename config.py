@@ -76,6 +76,18 @@ class Config:
     # 전환 시 이 값만 바꾸면 됨 — 코드 수정 불필요
     VIDEO_ENGINE: str = os.getenv("VIDEO_ENGINE", "kling")
 
+    # ─── 음악 합성 방식 ───────────────────────────────
+    # "external" : 짤스튜디오 등 외부 음원 사용.
+    #              ffmpeg 합성 시 음악 트랙을 포함하지 않고,
+    #              유튜브 앱 업로드 시 ISRC 코드로 수동으로 사운드 추가.
+    #              → 짤스튜디오 음원 수익 인식을 위해 필수.
+    #                (직접 다운받아 삽입하면 유튜브에서 음원 인식 안 됨)
+    # "embedded" : YouTube Audio Library 등 자유 음원 사용.
+    #              ffmpeg에서 음악 트랙을 직접 합성. 완전 자동화 가능.
+    #              → 유튜브 정책 변경 또는 짤스튜디오 미사용 시 전환.
+    # 전환 시 이 값과 .env의 MUSIC_MODE만 바꾸면 됨 — 코드 수정 불필요.
+    MUSIC_MODE: str = os.getenv("MUSIC_MODE", "external")
+
     # ─── YouTube ─────────────────────────────────────
     YOUTUBE_CLIENT_ID: str = os.getenv("YOUTUBE_CLIENT_ID", "")
     YOUTUBE_CLIENT_SECRET: str = os.getenv("YOUTUBE_CLIENT_SECRET", "")
@@ -91,12 +103,10 @@ class Config:
     MAX_ITEMS_PER_RUN: int = int(os.getenv("MAX_ITEMS_PER_RUN", 5))
 
     # ─── 대상 언어 ────────────────────────────────────
+    # 현재 영어권(미국/영국/캐나다/호주) 단일 타겟으로 운영.
+    # 채널 성장 후 다국어 자막 추가 시 이 목록을 확장.
     TARGET_LANGUAGES: list[dict] = [
         {"code": "en", "name": "English"},
-        {"code": "ko", "name": "한국어"},
-        {"code": "th", "name": "ภาษาไทย"},
-        {"code": "vi", "name": "Tiếng Việt"},
-        {"code": "id", "name": "Bahasa Indonesia"},
     ]
 
     def validate(self) -> list[str]:
