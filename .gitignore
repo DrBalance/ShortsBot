@@ -53,3 +53,6 @@ temp/
 .DS_Store
 .DS_Store
 .DS_Store
+uploader/token.json
+uploader/client_secret.json
+.DS_Store

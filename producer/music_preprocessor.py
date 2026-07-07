@@ -38,7 +38,7 @@ from botocore.config import Config as BotoConfig
 # 상위 디렉터리의 config, beat_sync 임포트
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import config
-from beat_sync import compute_scene_slots, BeatSyncResult
+from producer.beat_sync import compute_scene_slots, BeatSyncResult
 
 logging.basicConfig(
     level=logging.INFO,
