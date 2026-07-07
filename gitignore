@@ -52,3 +52,7 @@ temp/
 # ─── YouTube OAuth ───────────────────────────────────────
 token.json
 client_secret.json
+
+
+producer/music/raw/
+producer/music/processed/
