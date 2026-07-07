@@ -26,7 +26,6 @@ import argparse
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -47,7 +46,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 MUSIC_RAW_DIR = Path(__file__).parent / "music" / "raw"
-MUSIC_PROCESSED_DIR = Path(__file__).parent / "music" / "processed"
 
 # R2 키 prefix
 R2_MUSIC_PREFIX = "music"
@@ -152,6 +150,7 @@ def _save_to_supabase(meta: dict, beat: BeatSyncResult, original_key: str, clip_
     row = {
         "title": meta["title"],
         "artist": meta["artist"],
+        "attribution": meta["attribution"],
         "thematic_url": meta["thematic_url"],
         "mood": meta["mood"],
         "bpm": round(beat.bpm, 2),
@@ -248,14 +247,13 @@ def process_file(mp3_path: Path, start_offset_override: float | None = None) -> 
         # Step 4: Supabase 저장
         track_id = _save_to_supabase(meta, beat, original_key, clip_key)
 
-    # Step 5: 처리 완료 파일 이동
-    MUSIC_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(mp3_path), MUSIC_PROCESSED_DIR / mp3_path.name)
-    shutil.move(str(json_path), MUSIC_PROCESSED_DIR / json_path.name)
+    # Step 5: 로컬 파일 삭제 (원본은 R2에 저장됨)
+    mp3_path.unlink()
+    json_path.unlink()
 
     logger.info(
         f"=== 완료: {meta['title']} → track_id={track_id} "
-        f"(processed/ 로 이동) ==="
+        f"(로컬 파일 삭제, R2에 보관) ==="
     )
 
 
