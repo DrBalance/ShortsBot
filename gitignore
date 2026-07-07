@@ -48,3 +48,7 @@ temp/
 .idea/
 *.swp
 *.swo
+
+# ─── YouTube OAuth ───────────────────────────────────────
+token.json
+client_secret.json
