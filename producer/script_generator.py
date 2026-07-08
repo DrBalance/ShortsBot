@@ -4,7 +4,7 @@ Phase 2-1: Supabase content_candidates 테이블의 scenes 배열을
            Vidu Q3 멀티샷 프롬프트로 변환하고 영상을 생성한다.
 
 파이프라인 위치:
-  Supabase content_candidates (status='pending')
+  Supabase content_candidates (status='curated', 큐레이터가 아래 이미지 입력 완료)
     → scenes []  : beat_sync 타이밍 + claude_analyzer 나레이션 텍스트
     → product_image_url : Olive Young og:image (prdtNo로 파싱, R2 캐시)
     ↓
@@ -12,11 +12,15 @@ Phase 2-1: Supabase content_candidates 테이블의 scenes 배열을
     → 씬별 role + duration + content_type → Vidu 프롬프트 문단 조립
     → 멀티샷 프롬프트 문자열 (Shot 1 ~ Shot N 형식)
     ↓
-  call_vidu_api()
-    → referenceImages: [product_image_url]
-    → 단일 호출로 전체 영상 생성 (Vidu Q3 Smart Cuts)
+  generate_and_concat_video()
+    → Kling 10초 / Vidu 16초 제약 때문에 씬을 세그먼트(호출 단위)로 분할해
+      세그먼트별로 순차 생성 + 다운로드 → ffmpeg concat으로 전체 길이(35초+) 영상 완성
+    → upload_raw_video()로 즉시 R2에 업로드해 영구 URL 확보
+      (Kling/Vidu 임시 CDN URL은 24시간 후 만료되므로, raw_video_ready 상태로
+       오래 대기하다 producer/pipeline.py가 나중에 이어받아도 링크가 살아있어야 함)
     ↓
-  R2 업로드 → candidates status 'video_ready' 업데이트
+  candidates status 'raw_video_ready' 업데이트 → producer/pipeline.py가 이어받아
+  TTS 생성 + ffmpeg 합성 + R2 업로드 진행 (최종 status 'video_ready'는 uploader.py가 설정)
 
 설계 근거 (2026-07-05 논의):
   - 나레이션(ElevenLabs)과 영상(Vidu)은 완전히 독립 트랙.
@@ -33,18 +37,21 @@ Phase 2-1: Supabase content_candidates 테이블의 scenes 배열을
 from __future__ import annotations
 
 import logging
+import math
+import os
 import random
 import re
+import tempfile
 import time
-from dataclasses import dataclass, field
-
-
+from dataclasses import dataclass, field, replace
 
 import requests
 from bs4 import BeautifulSoup
 
 from config import config
 from db import supabase_client as db
+from producer.ffmpeg_composer import concat_video_clips
+from uploader.uploader import upload_raw_video
 
 logger = logging.getLogger(__name__)
 
@@ -724,9 +731,18 @@ def _poll_until_done(
     done_status: str,
     fail_statuses: list[str],
     label: str,
+    status_getter=lambda data: data.get("status", ""),
 ) -> dict:
     """
     공통 polling 루프. done_status가 될 때까지 poll_url을 반복 조회.
+
+    Args:
+        status_getter: 응답 JSON에서 상태 문자열을 추출하는 함수.
+            엔진마다 응답 구조가 달라서(예: Kling은 data.data.task_status) 기본값
+            data.get("status")만 쓰면 상태를 못 읽고 타임아웃까지 그냥 대기하게 된다
+            (실제로 이 문제로 Kling 성공/실패 감지가 전혀 안 되던 버그가 있었음).
+            엔진별 호출부에서 실제 응답 구조에 맞는 함수를 넘길 것.
+
     Returns: 완료 시점의 응답 JSON dict.
     """
     start_time = time.time()
@@ -738,7 +754,7 @@ def _poll_until_done(
         r = requests.get(poll_url, headers=headers, timeout=15)
         r.raise_for_status()
         data = r.json()
-        status = data.get("status", "")
+        status = status_getter(data)
         logger.info(f"{label} polling: status={status}, elapsed={elapsed:.0f}s")
         if status == done_status:
             return data
@@ -795,12 +811,12 @@ def call_kling_api(vidu_request: ViduRequest) -> str:
     비동기 패턴: POST 제출 → GET polling → 완료 URL.
 
     Kling 최대 10초 제약:
-      35초 영상은 여러 청크로 분할해서 생성하고 ffmpeg로 이어붙인다.
-      현재 구현은 단일 호출(최대 10초)로 첫 번째 청크만 생성.
-      TODO: 청크 분할 + ffmpeg 이어붙임은 Phase 2-3에서 구현.
+      이 함수는 vidu_request가 나타내는 분량(세그먼트 하나) 하나만 생성한다.
+      35초 전체 영상은 generate_and_concat_video()가 씬을 세그먼트로 쪼개
+      이 함수를 여러 번 호출하고 ffmpeg로 이어붙이는 방식으로 만든다.
 
     Returns:
-        생성된 영상의 임시 CDN URL (24시간 유효 — 즉시 R2에 저장해야 함)
+        생성된 영상 세그먼트의 임시 CDN URL (24시간 유효)
     """
     if not getattr(config, "KLING_API_KEY", None):
         raise RuntimeError("KLING_API_KEY가 config에 설정되지 않았습니다.")
@@ -813,7 +829,11 @@ def call_kling_api(vidu_request: ViduRequest) -> str:
     multi_prompt = _build_kling_multi_prompt(
         vidu_request.scene_prompts, vidu_request.total_duration
     )
-    duration_sec = min(int(vidu_request.total_duration), KLING_MAX_DURATION_SEC)
+    # Kling은 multi_prompt 내 duration 합과 최상위 duration이 정확히 일치해야
+    # 받아준다 (code 1201). round()/int() 혼용으로 어긋나지 않도록 multi_prompt에서
+    # 직접 합산한다 (generate_and_concat_video가 세그먼트를 이미 KLING_MAX_DURATION_SEC
+    # 이하로 쪼개놓으므로 별도 clamp 불필요).
+    duration_sec = sum(int(c["duration"]) for c in multi_prompt)
 
     payload = {
         "model_name":   KLING_MODEL,
@@ -853,6 +873,8 @@ def call_kling_api(vidu_request: ViduRequest) -> str:
         done_status="succeed",
         fail_statuses=["failed", "error"],
         label=f"Kling[{task_id}]",
+        # 실제 응답 구조 확인: data.data.task_status (최상위 status 키는 없음)
+        status_getter=lambda data: data.get("data", {}).get("task_status", ""),
     )
 
     # Kling 응답 구조 (실제 확인): data.task_result.videos[0].url
@@ -876,11 +898,12 @@ def call_vidu_api(vidu_request: ViduRequest) -> str:
     비동기 태스크 패턴: POST 제출 → GET polling → 완료 URL.
 
     Vidu 최대 16초 제약:
-      35초 영상은 여러 청크로 분할 후 ffmpeg 이어붙임.
-      TODO: 청크 분할은 Phase 2-3에서 구현.
+      이 함수는 vidu_request가 나타내는 분량(세그먼트 하나) 하나만 생성한다.
+      35초 전체 영상은 generate_and_concat_video()가 씬을 세그먼트로 쪼개
+      이 함수를 여러 번 호출하고 ffmpeg로 이어붙이는 방식으로 만든다.
 
     Returns:
-        생성된 영상의 임시 CDN URL (만료 전 R2에 저장해야 함)
+        생성된 영상 세그먼트의 임시 CDN URL (만료 전 R2에 저장해야 함)
     """
     if not getattr(config, "VIDU_API_KEY", None):
         raise RuntimeError("VIDU_API_KEY가 config에 설정되지 않았습니다.")
@@ -917,6 +940,13 @@ def call_vidu_api(vidu_request: ViduRequest) -> str:
         raise RuntimeError(f"Vidu API: task_id 없음. 응답: {resp}")
     logger.info(f"Vidu 태스크 제출 완료: task_id={task_id}")
 
+    # 주의: Kling 쪽에서 status_getter 기본값(data.get("status"))이 실제 응답 구조와
+    # 안 맞아 완료 감지가 전혀 안 되던 버그가 있었다 (data.data.task_status였음).
+    # Vidu도 done_data 추출부가 data["data"]["creations"] 형태로 한 겹 감싸져 있는 걸
+    # 보면 polling 응답의 상태 필드도 최상위 "status"가 아닐 가능성이 높다.
+    # VIDU_API_KEY가 아직 설정 안 돼 있어 실제 응답으로 검증 못 했으므로 추측으로
+    # 고치지 않았다 — Vidu로 전환하기 전에 실제 폴링 응답을 확인하고 status_getter를
+    # 맞는 경로로 지정할 것.
     poll_url = f"{VIDU_API_BASE}{VIDU_TASK_PATH.format(task_id=task_id)}"
     done_data = _poll_until_done(
         poll_url=poll_url,
@@ -965,15 +995,111 @@ def call_video_api(vidu_request: ViduRequest) -> str:
         )
 
 
+def _split_into_segments(
+    scene_prompts: list[ScenePrompt], max_segment_duration: float
+) -> list[list[ScenePrompt]]:
+    """
+    scene_prompts를 영상 생성 엔진의 1회 호출 최대 길이(max_segment_duration) 이하
+    단위로 순서대로 묶는다. 한 세그먼트 = 영상 생성 API를 1번 호출해서 만드는 분량.
+
+    (참고: _build_kling_multi_prompt()가 다루는 "청크"는 세그먼트 하나 *안에서*
+    멀티샷 storyboard를 최대 6개로 묶는 것으로, 여기서 만드는 세그먼트와는
+    다른 레벨의 분할이다.)
+
+    개별 씬이 max_segment_duration보다 길면 그 씬 자체를 동일 길이로 나눠
+    여러 세그먼트에 걸치게 한다 — 나레이션과 영상은 독립 트랙이라 씬 경계와
+    영상 컷 경계가 일치하지 않아도 된다는 기존 설계 원칙을 그대로 적용한 것이다.
+    """
+    expanded: list[ScenePrompt] = []
+    for sp in scene_prompts:
+        if sp.duration <= max_segment_duration:
+            expanded.append(sp)
+            continue
+        n_parts = math.ceil(sp.duration / max_segment_duration)
+        part_duration = sp.duration / n_parts
+        expanded.extend(replace(sp, duration=part_duration) for _ in range(n_parts))
+
+    segments: list[list[ScenePrompt]] = []
+    current: list[ScenePrompt] = []
+    current_duration = 0.0
+    for sp in expanded:
+        if current and current_duration + sp.duration > max_segment_duration:
+            segments.append(current)
+            current, current_duration = [], 0.0
+        current.append(sp)
+        current_duration += sp.duration
+    if current:
+        segments.append(current)
+
+    return segments
+
+
+def _download_video_segment(video_url: str, dest_path: str) -> str:
+    """영상 세그먼트의 임시 CDN URL을 로컬로 다운로드."""
+    r = requests.get(video_url, stream=True, timeout=60)
+    r.raise_for_status()
+    with open(dest_path, "wb") as f:
+        for chunk in r.iter_content(chunk_size=1 << 20):
+            f.write(chunk)
+    return dest_path
+
+
+def generate_and_concat_video(vidu_request: ViduRequest, workdir: str) -> str:
+    """
+    Kling(10초)/Vidu(16초) 1회 호출 최대 길이 제약 때문에, scene_prompts를
+    세그먼트 단위로 쪼개 세그먼트별로 영상을 생성+다운로드한 뒤 ffmpeg concat으로
+    이어붙여 vidu_request.total_duration 분량(35초+)의 영상 1개를 만든다.
+
+    각 세그먼트는 call_video_api()를 통해 기존 Kling/Vidu 단일 호출 로직을
+    그대로 재사용한다 (세그먼트 = vidu_request를 scene_prompts/total_duration만
+    해당 세그먼트 것으로 바꾼 복사본).
+
+    Returns:
+        이어붙인 로컬 mp4 경로
+    """
+    max_segment_duration = (
+        KLING_MAX_DURATION_SEC if vidu_request.engine == VIDEO_ENGINE_KLING
+        else VIDU_MAX_DURATION_SEC
+    )
+
+    segments = _split_into_segments(vidu_request.scene_prompts, max_segment_duration)
+    logger.info(
+        f"영상 세그먼트 분할: candidate={vidu_request.candidate_id}, "
+        f"씬 {len(vidu_request.scene_prompts)}개 → 세그먼트 {len(segments)}개"
+    )
+
+    local_clips: list[str] = []
+    for i, segment_scenes in enumerate(segments):
+        segment_duration = sum(sp.duration for sp in segment_scenes)
+        segment_request = replace(
+            vidu_request,
+            scene_prompts=segment_scenes,
+            multishot_prompt=_build_multishot_prompt(segment_scenes),
+            total_duration=segment_duration,
+        )
+        video_url = call_video_api(segment_request)
+
+        local_path = os.path.join(workdir, f"segment_{i}.mp4")
+        _download_video_segment(video_url, local_path)
+        local_clips.append(local_path)
+        logger.info(
+            f"세그먼트 {i + 1}/{len(segments)} 생성+다운로드 완료: {segment_duration:.1f}s"
+        )
+
+    concat_path = os.path.join(workdir, "raw_video_concat.mp4")
+    concat_video_clips(local_clips, concat_path)
+    return concat_path
+
+
 def run_generation(candidate_id: str) -> ViduResult:
     """
     단일 candidate에 대해 영상 생성 전체 파이프라인 실행.
 
     1. DB에서 candidate 로드
     2. ViduRequest 조립
-    3. Vidu API 호출
-    4. (TODO Phase 2-3) R2 업로드
-    5. DB status 업데이트
+    3. 세그먼트 단위로 Kling/Vidu 호출 + ffmpeg concat → 전체 길이(35초+) 영상 완성
+    4. 완성된 영상을 R2에 업로드해 영구 URL 확보
+    5. DB status를 'raw_video_ready'로 업데이트 (producer/pipeline.run_production이 이어받음)
 
     Args:
         candidate_id: Supabase content_candidates.id
@@ -991,10 +1117,16 @@ def run_generation(candidate_id: str) -> ViduResult:
     vidu_request = generate_vidu_request(candidate)
     vidu_request.engine = engine
 
-    # 3. 영상 생성 API 호출 (engine에 따라 Kling / Vidu 자동 분기)
+    # 3. 세그먼트별 영상 생성 + ffmpeg concat (Kling 10초 / Vidu 16초 제약 대응)
     start = time.time()
-    video_url = call_video_api(vidu_request)
-    generation_sec = time.time() - start
+    with tempfile.TemporaryDirectory() as workdir:
+        raw_video_path = generate_and_concat_video(vidu_request, workdir)
+        generation_sec = time.time() - start
+
+        # 4. 완성된 영상을 즉시 R2에 업로드 (Kling/Vidu 임시 세그먼트 URL은
+        #    이미 다운로드로 소비했고, 이제 영구 URL로 저장해야 raw_video_ready로
+        #    오래 대기해도 링크가 만료되지 않는다)
+        video_url = upload_raw_video(candidate_id, raw_video_path)
 
     result = ViduResult(
         candidate_id=candidate_id,
@@ -1003,12 +1135,9 @@ def run_generation(candidate_id: str) -> ViduResult:
         generation_sec=generation_sec,
     )
 
-    # 4. 음악 선택 (music_tracks에서 랜덤 선택 + R2 클립 다운로드)
+    # 5. 음악 선택 (music_tracks에서 랜덤 선택 + R2 클립 다운로드)
     music_track_id = None
     try:
-        import sys as _sys
-        from pathlib import Path as _Path
-        _sys.path.insert(0, str(_Path(__file__).parent.parent))
         from producer.music_selector import select_track
         track = select_track()
         result.music_track_id = track.id
@@ -1018,9 +1147,6 @@ def run_generation(candidate_id: str) -> ViduResult:
     except Exception as e:
         logger.warning(f"음악 선택 실패 (영상 생성은 완료됨): {e}")
 
-    # 5. TODO: R2 업로드 (Phase 2-3에서 구현)
-    # result.r2_url = upload_to_r2(video_url, candidate_id)
-
     # 6. DB 상태 업데이트
     extra = {
         "video_url": video_url,
@@ -1029,7 +1155,7 @@ def run_generation(candidate_id: str) -> ViduResult:
     }
     if music_track_id:
         extra["music_track_id"] = music_track_id
-    db.update_candidate_status(candidate_id, "video_ready", extra)
+    db.update_candidate_status(candidate_id, "raw_video_ready", extra)
     logger.info(
         f"영상 생성 완료: candidate={candidate_id}, engine={engine}, "
         f"video_url={video_url}, elapsed={generation_sec:.1f}s"
@@ -1040,12 +1166,13 @@ def run_generation(candidate_id: str) -> ViduResult:
 
 def run_batch(limit: int = 5) -> list[ViduResult]:
     """
-    pending 상태 candidates를 최대 limit개 처리.
-    스케줄러 진입점.
+    curated 상태 candidates를 최대 limit개 처리.
+    이 함수는 raw 영상 생성만 담당한다 (producer/pipeline.run_production_batch가
+    TTS + ffmpeg 합성 + R2 업로드까지 이어받는 상위 진입점).
     """
-    candidates = db.get_candidates_by_status("pending", limit=limit)
+    candidates = db.get_candidates_by_status("curated", limit=limit)
     if not candidates:
-        logger.info("처리할 pending candidate 없음")
+        logger.info("처리할 curated candidate 없음")
         return []
 
     results = []

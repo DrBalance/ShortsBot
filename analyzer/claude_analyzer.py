@@ -1,5 +1,5 @@
 """
-collector/claude_analyzer.py
+analyzer/claude_analyzer.py
 수집된 인스타 게시물을 Claude로 분석하여 쇼츠 콘텐츠 후보를 생성합니다.
 
 파이프라인:
@@ -18,7 +18,7 @@ import logging
 import anthropic
 from config import config
 from db import supabase_client as db
-from youtube_collector import collect_pain_points_for_product as yt_pain_points
+from collector.youtube_collector import collect_pain_points_for_product as yt_pain_points
 
 logger = logging.getLogger(__name__)
 

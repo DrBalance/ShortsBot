@@ -51,6 +51,11 @@ class Config:
     R2_ACCESS_KEY_ID: str = os.getenv("R2_ACCESS_KEY_ID", "")
     R2_SECRET_ACCESS_KEY: str = os.getenv("R2_SECRET_ACCESS_KEY", "")
     R2_BUCKET_NAME: str = os.getenv("R2_BUCKET_NAME", "kbeauty-shorts")
+    # R2 버킷 Public Access(r2.dev 서브도메인) 활성화 후 발급되는 공개 URL.
+    # {account_id}.r2.cloudflarestorage.com 형태의 S3 API 엔드포인트는 SigV4 서명이
+    # 있어야만 접근되는 주소라 외부 서비스(Kling 등)가 그냥 못 읽는다 — 실제 공개
+    # 서빙에는 반드시 이 값을 써야 한다.
+    R2_PUBLIC_BASE_URL: str = os.getenv("R2_PUBLIC_BASE_URL", "")
 
     # ─── ElevenLabs ──────────────────────────────────
     ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")

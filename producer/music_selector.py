@@ -123,7 +123,18 @@ def select_track(
     row = random.choice(candidates)
     logger.info(f"음악 선택: [{row['mood']}] {row['title']} - {row['artist']} (used_count={row['used_count']})")
 
-    # R2에서 클립 다운로드
+    local_path = _download_clip_for_row(row, download_dir)
+
+    # used_count 증가
+    sb.table("music_tracks").update(
+        {"used_count": row["used_count"] + 1}
+    ).eq("id", row["id"]).execute()
+
+    return _row_to_track(row, local_path)
+
+
+def _download_clip_for_row(row: dict, download_dir: str | None) -> str:
+    """row(music_tracks 레코드)의 clip_r2_key를 download_dir로 다운로드하고 로컬 경로를 반환."""
     dl_dir = Path(download_dir) if download_dir else Path(tempfile.gettempdir())
     dl_dir.mkdir(parents=True, exist_ok=True)
     local_path = dl_dir / Path(row["clip_r2_key"]).name
@@ -136,12 +147,10 @@ def select_track(
         Filename=str(local_path),
     )
     logger.info(f"다운로드 완료: {local_path}")
+    return str(local_path)
 
-    # used_count 증가
-    sb.table("music_tracks").update(
-        {"used_count": row["used_count"] + 1}
-    ).eq("id", row["id"]).execute()
 
+def _row_to_track(row: dict, local_path: str) -> MusicTrack:
     return MusicTrack(
         id=row["id"],
         title=row["title"],
@@ -154,5 +163,34 @@ def select_track(
         fade_in_ms=row["fade_in_ms"],
         fade_out_ms=row["fade_out_ms"],
         clip_r2_key=row["clip_r2_key"],
-        local_clip_path=str(local_path),
+        local_clip_path=local_path,
     )
+
+
+def get_track_clip(track_id: str, download_dir: str | None = None) -> MusicTrack:
+    """
+    track_id로 특정 곡의 메타데이터를 조회하고 클립을 (재)다운로드한다.
+    select_track()과 달리 used_count는 증가시키지 않는다 — 이미 select_track()이
+    선택 시점에 1회 증가시켰으므로, 여기서는 같은 곡의 클립 파일만 다시 받는다.
+
+    사용처: producer/pipeline.py — run_generation()이 select_track()으로 곡을
+    고른 뒤 시간이 지나 별도 프로세스(스케줄러)가 합성 단계를 이어받을 때,
+    최초 선택 시 받은 로컬 임시 파일이 이미 사라졌을 수 있어 재다운로드가 필요하다.
+
+    Args:
+        track_id: music_tracks.id
+        download_dir: 클립을 저장할 디렉터리. None이면 시스템 임시 디렉터리.
+
+    Returns:
+        MusicTrack (local_clip_path에 재다운로드된 경로 포함)
+    """
+    from supabase import create_client
+
+    sb = create_client(config.SUPABASE_URL, config.SUPABASE_SERVICE_KEY)
+    resp = sb.table("music_tracks").select("*").eq("id", track_id).single().execute()
+    row = resp.data
+    if not row:
+        raise RuntimeError(f"music_tracks에서 id={track_id}를 찾을 수 없습니다.")
+
+    local_path = _download_clip_for_row(row, download_dir)
+    return _row_to_track(row, local_path)

@@ -63,11 +63,17 @@ class ComposerInput:
     output_dir: str                     # 출력 디렉터리 (final.mp4, en.srt 저장)
 
     # embedded 모드에서만 필요. external 모드면 None으로 두면 됨.
-    music_path: str | None = None       # 원본 음악 파일 경로
+    music_path: str | None = None       # 원본 음악 파일 경로 (music_preprocessed=False일 때)
     start_offset: float | None = None   # beat_sync.BeatSyncResult.start_offset
     video_end: float | None = None      # beat_sync.BeatSyncResult.video_end
     fade_in_ms: float = 40.0            # beat_sync.BeatSyncResult.fade_in_ms
     fade_out_ms: float = 180.0          # beat_sync.BeatSyncResult.fade_out_ms
+
+    # True면 music_path가 이미 trim+fade+볼륨 처리가 끝난 클립(music_preprocessor.py
+    # 산출물, music_selector.select_track()/get_track_clip()이 내려주는 clip_r2_key
+    # 파일)이라는 뜻 — process_music()을 건너뛰고 그대로 믹싱한다.
+    # False면 원본 음악 파일이라는 뜻이라 start_offset/video_end로 직접 트림해야 한다.
+    music_preprocessed: bool = False
 
 
 @dataclass
@@ -443,20 +449,31 @@ def compose(inp: ComposerInput, music_mode: str | None = None) -> ComposerResult
             # embedded: 음악 트랙 합성
             if not inp.music_path:
                 raise ValueError("embedded 모드에서는 music_path가 필요합니다.")
-            if inp.start_offset is None or inp.video_end is None:
-                raise ValueError("embedded 모드에서는 start_offset과 video_end가 필요합니다.")
 
-            music_processed = str(tmp / "music_processed.mp3")
-            process_music(
-                inp.music_path,
-                inp.start_offset,
-                inp.video_end,
-                inp.fade_in_ms,
-                inp.fade_out_ms,
-                music_processed,
-            )
             audio_mix = str(tmp / "audio_mix.aac")
-            mix_audio(tts_concat, music_processed, audio_mix)
+
+            if inp.music_preprocessed:
+                # music_preprocessor.py가 이미 trim+fade+볼륨 처리해둔 클립이므로
+                # 그대로 믹싱한다 (다시 trim하면 원본 곡 기준 절대 시간을 이미
+                # 잘려나간 클립에 또 적용하는 꼴이라 범위를 벗어나 빈 오디오가 된다).
+                mix_audio(tts_concat, inp.music_path, audio_mix)
+            else:
+                if inp.start_offset is None or inp.video_end is None:
+                    raise ValueError(
+                        "embedded 모드(music_preprocessed=False)에서는 "
+                        "start_offset과 video_end가 필요합니다."
+                    )
+                music_processed = str(tmp / "music_processed.mp3")
+                process_music(
+                    inp.music_path,
+                    inp.start_offset,
+                    inp.video_end,
+                    inp.fade_in_ms,
+                    inp.fade_out_ms,
+                    music_processed,
+                )
+                mix_audio(tts_concat, music_processed, audio_mix)
+
             final_audio = audio_mix
 
         else:

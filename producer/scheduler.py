@@ -1,6 +1,6 @@
 """
-collector/scheduler.py
-APScheduler를 사용해 수집 봇과 분석 봇을 주기적으로 실행합니다.
+producer/scheduler.py
+APScheduler를 사용해 수집 봇, 분석 봇, 제작 봇을 주기적으로 실행합니다.
 """
 import logging
 import sys
@@ -10,7 +10,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from config import config
 from collector.apify_scraper import run_collection
-from collector.claude_analyzer import run_analysis
+from analyzer.claude_analyzer import run_analysis
+from producer.pipeline import run_production_batch
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +46,17 @@ def job_analyze():
         logger.error(f"분석 Job 오류: {e}", exc_info=True)
 
 
+def job_produce():
+    """제작 Job: curated/raw_video_ready 후보를 완제품 영상까지 처리."""
+    logger.info("=" * 50)
+    logger.info("제작 Job 시작")
+    try:
+        results = run_production_batch(limit=config.MAX_ITEMS_PER_RUN)
+        logger.info(f"제작 Job 완료: {len(results)}건 성공")
+    except Exception as e:
+        logger.error(f"제작 Job 오류: {e}", exc_info=True)
+
+
 def start():
     """스케줄러 시작 (블로킹)."""
     # 환경변수 체크
@@ -74,15 +86,27 @@ def start():
         max_instances=1,
     )
 
+    # 제작: config.PRODUCE_INTERVAL_HOURS 마다
+    scheduler.add_job(
+        job_produce,
+        trigger=IntervalTrigger(hours=config.PRODUCE_INTERVAL_HOURS),
+        id="produce",
+        name="영상 제작 봇",
+        replace_existing=True,
+        max_instances=1,
+    )
+
     logger.info(
         f"스케줄러 시작 — "
         f"수집: {config.COLLECT_INTERVAL_HOURS}시간마다 | "
-        f"분석: {max(1, config.COLLECT_INTERVAL_HOURS // 2)}시간마다"
+        f"분석: {max(1, config.COLLECT_INTERVAL_HOURS // 2)}시간마다 | "
+        f"제작: {config.PRODUCE_INTERVAL_HOURS}시간마다"
     )
 
     # 시작 시 즉시 1회 실행
     job_collect()
     job_analyze()
+    job_produce()
 
     try:
         scheduler.start()

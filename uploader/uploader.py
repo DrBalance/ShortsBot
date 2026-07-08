@@ -59,23 +59,37 @@ def get_video_r2_key(candidate_id: str) -> str:
     return f"{candidate_id}/final.mp4"
 
 
+def get_raw_video_r2_key(candidate_id: str) -> str:
+    """TTS/음악 합성 전, script_generator.py가 세그먼트를 이어붙인 원본 영상 키."""
+    return f"{candidate_id}/raw_video.mp4"
+
+
 def get_srt_r2_key(candidate_id: str) -> str:
     return f"{candidate_id}/en.srt"
 
 
+def _r2_public_url(key: str) -> str:
+    """
+    R2 공개 URL 조립. R2_PUBLIC_BASE_URL(버킷 Public Access로 발급된 r2.dev
+    서브도메인, 또는 연결한 커스텀 도메인)을 반드시 써야 한다 —
+    {account_id}.r2.cloudflarestorage.com 형태의 S3 API 엔드포인트는 SigV4
+    서명이 있어야만 접근되는 주소라 외부 서비스(Kling 등)가 그냥 못 읽는다.
+    """
+    if not config.R2_PUBLIC_BASE_URL:
+        raise RuntimeError(
+            "R2_PUBLIC_BASE_URL이 설정되지 않았습니다. R2 버킷의 Public Access를 "
+            "활성화하고 발급된 URL을 .env의 R2_PUBLIC_BASE_URL로 넣어주세요."
+        )
+    return f"{config.R2_PUBLIC_BASE_URL.rstrip('/')}/{key}"
+
+
 def get_video_r2_url(candidate_id: str) -> str:
-    """R2 퍼블릭 URL (커스텀 도메인 없이 버킷 직접 접근)."""
-    return (
-        f"https://{config.R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-        f"/{config.R2_BUCKET_NAME}/{get_video_r2_key(candidate_id)}"
-    )
+    """R2 공개 URL."""
+    return _r2_public_url(get_video_r2_key(candidate_id))
 
 
 def get_srt_r2_url(candidate_id: str) -> str:
-    return (
-        f"https://{config.R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-        f"/{config.R2_BUCKET_NAME}/{get_srt_r2_key(candidate_id)}"
-    )
+    return _r2_public_url(get_srt_r2_key(candidate_id))
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +168,32 @@ def upload(
         duration=duration,
         video_engine=engine,
     )
+
+
+def upload_raw_video(candidate_id: str, video_path: str) -> str:
+    """
+    script_generator.py가 세그먼트를 ffmpeg concat으로 이어붙인 원본(TTS/음악 합성 전)
+    영상을 R2에 업로드하고 영구 URL을 반환한다.
+
+    Kling/Vidu가 주는 세그먼트 URL은 24시간 후 만료되는 임시 CDN URL이라,
+    candidate가 raw_video_ready 상태로 오래 대기하다가 producer/pipeline.py가
+    나중에(다른 프로세스에서) 합성 단계를 이어받아도 링크가 살아있도록
+    생성 직후 바로 R2에 옮겨 candidate.video_url에 저장한다.
+
+    Args:
+        candidate_id: kbeauty_content_candidates.id
+        video_path: ffmpeg concat으로 만든 로컬 mp4 경로
+
+    Returns:
+        R2 퍼블릭 URL
+    """
+    r2 = _get_r2_client()
+    key = get_raw_video_r2_key(candidate_id)
+    _upload_file(r2, video_path, key, content_type="video/mp4")
+
+    url = _r2_public_url(key)
+    logger.info(f"raw 영상 R2 업로드 완료: {url}")
+    return url
 
 
 # ---------------------------------------------------------------------------

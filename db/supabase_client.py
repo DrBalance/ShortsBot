@@ -178,6 +178,7 @@ def update_candidate_scene_image(
     """
     ChatGPT로 생성한 9:16 배경 합성 이미지 URL 저장.
     큐레이터가 이미지 생성 후 수동으로 호출.
+    product_image_url까지 다 채웠으면 mark_candidate_curated()를 이어서 호출할 것.
 
     Args:
         candidate_id: kbeauty_content_candidates.id
@@ -198,6 +199,7 @@ def update_candidate_product_info(
     """
     Olive Young 제품 정보(prdtNo + og:image URL) 저장.
     큐레이터가 큐레이터 링크 생성 후 수동으로 호출.
+    scene_image_url까지 다 채웠으면 mark_candidate_curated()를 이어서 호출할 것.
 
     Args:
         candidate_id: kbeauty_content_candidates.id
@@ -210,6 +212,31 @@ def update_candidate_product_info(
         "product_image_url": product_image_url,
     }).eq("id", candidate_id).execute()
     logger.info(f"제품 정보 저장: {candidate_id}, prdtNo={prdt_no}")
+
+
+def mark_candidate_curated(candidate_id: str) -> None:
+    """
+    큐레이터가 product_image_url + scene_image_url을 모두 채운 뒤 호출.
+    production 파이프라인(producer/pipeline.py)이 처리 대상을 찾을 때
+    이 status를 기준으로 조회하므로, 필드만 채우고 이 함수를 호출하지 않으면
+    영상 제작이 시작되지 않는다.
+
+    Args:
+        candidate_id: kbeauty_content_candidates.id
+
+    Raises:
+        ValueError: product_image_url 또는 scene_image_url이 비어있는 경우
+    """
+    candidate = get_candidate(candidate_id)
+    if not candidate:
+        raise ValueError(f"candidate {candidate_id}를 찾을 수 없습니다.")
+    if not candidate.get("product_image_url"):
+        raise ValueError(f"candidate {candidate_id}: product_image_url이 없습니다.")
+    if not candidate.get("scene_image_url"):
+        raise ValueError(f"candidate {candidate_id}: scene_image_url이 없습니다.")
+
+    update_candidate_status(candidate_id, "curated")
+    logger.info(f"candidate 큐레이션 완료 처리: {candidate_id}")
 
 
 # ─── 영상 ────────────────────────────────────────────────────

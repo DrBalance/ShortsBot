@@ -115,7 +115,7 @@ async def trigger_collect():
 @app.post("/api/trigger/analyze")
 async def trigger_analyze():
     """분석 봇 수동 실행."""
-    from collector.claude_analyzer import run_analysis
+    from analyzer.claude_analyzer import run_analysis
     try:
         count = run_analysis()
         return {"success": True, "candidates": count}
@@ -125,8 +125,13 @@ async def trigger_analyze():
 
 @app.post("/api/trigger/produce")
 async def trigger_produce():
-    """제작 봇 수동 실행 (2단계 완성 후 활성화)."""
-    return {"success": False, "message": "2단계(영상 제작 봇) 개발 후 활성화됩니다."}
+    """제작 봇 수동 실행. curated/raw_video_ready 후보를 완제품 영상까지 처리."""
+    from producer.pipeline import run_production_batch
+    try:
+        results = run_production_batch(limit=config.MAX_ITEMS_PER_RUN)
+        return {"success": True, "produced": len(results)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/trigger/upload")
