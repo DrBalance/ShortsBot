@@ -11,6 +11,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from config import config
 from collector.apify_scraper import run_collection
 from analyzer.claude_analyzer import run_analysis
+from producer.music_selector import get_scene_template
 from producer.pipeline import run_production_batch
 
 logging.basicConfig(
@@ -36,11 +37,16 @@ def job_collect():
 
 
 def job_analyze():
-    """분석 Job: Claude로 트렌드 소재 추출."""
+    """분석 Job: Claude로 트렌드 소재 추출.
+
+    씬 슬롯 구조는 music_tracks 풀에서 빌려온다 (music_preprocessor.py가
+    이미 계산해둔 것) — 매번 새로 beat_sync를 돌릴 필요 없음.
+    """
     logger.info("=" * 50)
     logger.info("분석 Job 시작")
     try:
-        count = run_analysis(batch_size=config.MAX_ITEMS_PER_RUN)
+        scenes = get_scene_template()
+        count = run_analysis(batch_size=config.MAX_ITEMS_PER_RUN, scenes=scenes)
         logger.info(f"분석 Job 완료: 후보 {count}건 저장")
     except Exception as e:
         logger.error(f"분석 Job 오류: {e}", exc_info=True)

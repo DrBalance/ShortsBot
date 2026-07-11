@@ -15,15 +15,16 @@ R2에서 35초 클립을 로컬에 다운로드하는 헬퍼 모듈.
     track = select_track(mood="upbeat")   # mood 지정 (선택)
     track = select_track()                # 전체에서 랜덤
 
-    # ffmpeg_composer.ComposerInput에 전달
+    # ffmpeg_composer.ComposerInput에 전달 (clip은 이미 trim+fade+볼륨 처리 완료됨)
     inp = ComposerInput(
         ...
         music_path=track.local_clip_path,
-        start_offset=track.start_offset,
-        video_end=track.video_end,
-        fade_in_ms=track.fade_in_ms,
-        fade_out_ms=track.fade_out_ms,
+        music_preprocessed=True,
     )
+
+get_scene_template()은 분석 시점(claude_analyzer.run_analysis)에 필요한 씬 슬롯
+구조만 music_tracks 풀에서 빌려온다. 실제 배경음악은 제작 시점에 select_track()으로
+별도 랜덤 선택되므로, 여기서는 used_count를 증가시키지 않는다.
 """
 from __future__ import annotations
 
@@ -194,3 +195,54 @@ def get_track_clip(track_id: str, download_dir: str | None = None) -> MusicTrack
 
     local_path = _download_clip_for_row(row, download_dir)
     return _row_to_track(row, local_path)
+
+
+def get_scene_template(mood: str | None = None) -> list[dict]:
+    """
+    분석 시점(claude_analyzer.run_analysis)에 필요한 씬 슬롯 구조를
+    music_tracks 풀에서 하나 골라 반환한다. 오디오 파일 다운로드는 필요 없다 —
+    music_preprocessor.py가 이미 계산해 저장해둔 scenes 컬럼을 그대로 읽는다.
+
+    실제 배경음악은 제작 시점(script_generator.run_generation)에 select_track()으로
+    별도 랜덤 선택되므로, 이 함수는 씬 "모양"(개수/길이)만 빌려오는 것이고
+    used_count는 증가시키지 않는다.
+
+    Args:
+        mood: 필터링할 mood. None이면 전체에서 랜덤.
+
+    Returns:
+        beat_sync.SceneSlot.to_dict() 리스트
+        (claude_analyzer.run_analysis(scenes=...)에 그대로 전달 가능)
+
+    Raises:
+        RuntimeError: scenes가 저장된 활성 트랙이 없을 때
+    """
+    import random
+
+    from supabase import create_client
+
+    sb = create_client(config.SUPABASE_URL, config.SUPABASE_SERVICE_KEY)
+    query = (
+        sb.table("music_tracks")
+        .select("title, artist, scenes")
+        .eq("is_active", True)
+        .not_.is_("scenes", "null")
+    )
+    if mood:
+        query = query.eq("mood", mood)
+
+    resp = query.limit(20).execute()
+    candidates = resp.data
+
+    if not candidates:
+        if mood:
+            logger.warning(f"mood='{mood}'이고 scenes가 있는 트랙이 없어 전체에서 선택합니다.")
+            return get_scene_template(mood=None)
+        raise RuntimeError(
+            "scenes가 저장된 music_tracks 레코드가 없습니다. "
+            "music_preprocessor.py로 트랙을 먼저 등록하세요."
+        )
+
+    row = random.choice(candidates)
+    logger.info(f"씬 템플릿 차용: [{row['title']} - {row['artist']}] {len(row['scenes'])}개 씬")
+    return row["scenes"]

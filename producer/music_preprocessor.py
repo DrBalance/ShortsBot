@@ -160,6 +160,9 @@ def _save_to_supabase(meta: dict, beat: BeatSyncResult, original_key: str, clip_
         "video_end": round(beat.video_end, 3),
         "fade_in_ms": beat.fade_in_ms,
         "fade_out_ms": beat.fade_out_ms,
+        # claude_analyzer.run_analysis()가 그대로 쓸 수 있는 씬 슬롯 구조.
+        # 여기서 저장해두면 분석 시점에 매번 beat_sync를 다시 돌릴 필요가 없다.
+        "scenes": [s.to_dict() for s in beat.scenes],
         "used_count": 0,
         "is_active": True,
     }
